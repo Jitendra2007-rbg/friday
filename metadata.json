@@ -1,0 +1,7 @@
+{
+  "name": "friday Voice Agent",
+  "description": "An interactive voice agent powered by the Gemini API. Activate it with a voice command to open websites, schedule events, set alarms, and have conversations. All interactions are managed through voice.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
