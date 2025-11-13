@@ -6,6 +6,31 @@ import { decode, encode, decodeAudioData, playAlarmSound } from '../utils/audio'
 
 const WAKE_WORDS = ["hey agent", "hey ridat", "friday", "hey friday", "hey"];
 
+// Load Capacitor modules at runtime if available. This avoids compile-time errors
+// in environments where Capacitor packages are not installed (web development).
+let isCapacitor = false;
+let Capacitor: any = null;
+let Browser: any = null;
+let Permissions: any = null;
+
+// Dynamically attempt to load Capacitor modules at runtime. Use ts-ignore to
+// avoid type-checker errors in environments without the packages installed.
+(async () => {
+    try {
+        // @ts-ignore
+        const cap = await import('@capacitor/core');
+        Capacitor = cap.Capacitor ?? cap;
+        // @ts-ignore
+        const b = await import('@capacitor/browser');
+        Browser = b.Browser ?? b;
+    // Rely on any Permissions API exposed via Capacitor at runtime (e.g. Capacitor.Plugins.Permissions
+    // or Capacitor.Permissions). Do not require a separate permissions package at build time.
+        isCapacitor = typeof Capacitor?.isNativePlatform === 'function' ? Capacitor.isNativePlatform() : false;
+    } catch (e) {
+        // Capacitor not available in this environment (likely web). Keep isCapacitor=false.
+    }
+})();
+
 const functionDeclarations: FunctionDeclaration[] = [
     {
         name: 'openWebsite',
@@ -84,16 +109,75 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
         // FIX: Moved agentFunctions inside the callback to prevent stale closures on state setters.
         const agentFunctions = {
             openWebsite: (url: string) => {
+                // Keep original function declaration but attempt native app open on Capacitor builds.
                 if (!url || typeof url !== 'string') {
                     return "I can't open a website without a valid URL.";
                 }
-                let fullUrl = url;
-                if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
-                    fullUrl = `https://${fullUrl}`;
-                }
-                // Attempt to open the URL directly. Note: This may be blocked by browser pop-up blockers.
-                window.open(fullUrl, '_blank');
-                addTranscript('system', `Attempting to open: ${fullUrl}`);
+                const siteName = url.trim().toLowerCase();
+                const siteMap: Record<string, { web: string; app?: string }> = {
+                    youtube: { web: "https://www.youtube.com", app: "vnd.youtube://" },
+                    instagram: { web: "https://www.instagram.com", app: "instagram://" },
+                    twitter: { web: "https://twitter.com", app: "twitter://" },
+                    spotify: { web: "https://open.spotify.com", app: "spotify://" },
+                    gmail: { web: "https://mail.google.com", app: "googlegmail://" },
+                    linkedin: { web: "https://www.linkedin.com", app: "linkedin://" },
+                    amazon: { web: "https://www.amazon.in", app: "amazon://" },
+                    facebook: { web: "https://www.facebook.com", app: "fb://" },
+                };
+
+                const target = siteMap[siteName];
+
+                // Helper to open web fallback in both web and Capacitor
+                const openWeb = (webUrl: string) => {
+                    try {
+                        // In web, use window.open. In capacitor/native, use Browser.open.
+                        if (isCapacitor) {
+                            Browser.open({ url: webUrl }).catch(console.error);
+                        } else {
+                            window.open(webUrl, '_blank');
+                        }
+                        addTranscript('system', `Attempting to open: ${webUrl}`);
+                    } catch (e) {
+                        console.error('Failed to open web url', e);
+                    }
+                };
+
+                (async () => {
+                    try {
+                        if (isCapacitor && target?.app) {
+                            // Try deep link first
+                            await Browser.open({ url: target.app });
+                            addTranscript('system', `Opened ${url} app.`);
+                            return;
+                        }
+                        if (target?.web) {
+                            openWeb(target.web);
+                            return;
+                        }
+
+                        // If not a known site, try to open the provided url as-is, then fallback to search
+                        let fullUrl = url;
+                        if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
+                            fullUrl = `https://${fullUrl}`;
+                        }
+                        if (isCapacitor) {
+                            await Browser.open({ url: fullUrl });
+                        } else {
+                            window.open(fullUrl, '_blank');
+                        }
+                        addTranscript('system', `Attempting to open: ${fullUrl}`);
+                    } catch (err) {
+                        // Fallback to web version if deep link fails
+                        console.warn('Deep link failed, falling back to web', err);
+                        if (target?.web) {
+                            try { await Browser.open({ url: target.web }); } catch { openWeb(target.web); }
+                        } else {
+                            const fallback = `https://www.google.com/search?q=${encodeURIComponent(url)}`;
+                            openWeb(fallback);
+                        }
+                    }
+                })();
+
                 return `Opening ${url} now.`;
             },
             launchApp: (appName: string) => {
@@ -132,6 +216,28 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
         };
 
         try {
+            // If running on a native Capacitor platform, ensure microphone permission is requested first.
+            if (isCapacitor) {
+                try {
+                    // Prefer the dynamically imported Permissions object if available
+                    const perms = Permissions ?? (Capacitor?.Plugins?.Permissions ?? null);
+                    if (perms && typeof perms.query === 'function') {
+                        const micStatus = await perms.query({ name: 'microphone' } as any);
+                        if (micStatus?.state !== 'granted') {
+                            try { await perms.request({ name: 'microphone' } as any); } catch {}
+                        }
+                    } else if (Capacitor?.Permissions && typeof Capacitor.Permissions.query === 'function') {
+                        const micStatus = await Capacitor.Permissions.query({ name: 'microphone' } as any);
+                        if (micStatus?.state !== 'granted') {
+                            try { await Capacitor.Permissions.request({ name: 'microphone' } as any); } catch {}
+                        }
+                    }
+                } catch (permErr) {
+                    // Continue to getUserMedia even if permission APIs are unavailable or fail.
+                    console.warn('Capacitor microphone permission check failed', permErr);
+                }
+            }
+
             mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
             inputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
             outputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
