@@ -1,10 +1,9 @@
-
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, FunctionDeclaration, Type, LiveServerMessage, Modality, Blob } from '@google/genai';
 import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
 import { decode, encode, decodeAudioData, playAlarmSound } from '../utils/audio';
 import { supabase } from '../utils/supabase';
-import { isNativePlatform, scheduleNotification, launchAppByUrl } from '../utils/capacitor';
+import { isNativePlatform, scheduleNativeNotification, cancelNativeNotifications, launchAppByUrl } from '../utils/capacitor';
 
 const functionDeclarations: FunctionDeclaration[] = [
     {
@@ -29,12 +28,23 @@ const functionDeclarations: FunctionDeclaration[] = [
     }
 ];
 
+// Generates a consistent 32-bit integer ID from a string for notifications.
+const simpleHash = (str: string): number => {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        const char = str.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash |= 0; // Convert to 32bit integer
+    }
+    return Math.abs(hash);
+};
+
+
 export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyError: () => void }) => {
     const [agentStatus, setAgentStatus] = useState<AgentStatus>(AgentStatus.IDLE);
     const [transcriptHistory, setTranscriptHistory] = useState<TranscriptEntry[]>([]);
     const [events, setEvents] = useState<CalendarEvent[]>([]);
     const [alarms, setAlarms] = useState<Alarm[]>([]);
-    const [firedNotificationIds, setFiredNotificationIds] = useState(new Set<string>());
 
     // The 'LiveSession' type is not exported from '@google/genai', so 'any' is used.
     const sessionPromiseRef = useRef<Promise<any> | null>(null);
@@ -57,6 +67,9 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
     }, []);
 
     const deleteAlarm = useCallback(async (id: string) => {
+        if (isNativePlatform()) {
+            await cancelNativeNotifications([simpleHash(`alarm-${id}`)]);
+        }
         const { error } = await supabase.from('alarms').delete().match({ id });
         if (error) {
             console.error('Error deleting alarm:', error);
@@ -67,16 +80,26 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
     }, [addTranscript]);
     
     const updateAlarm = useCallback(async (id: string, updates: { label: string, time: Date }) => {
+        const notificationId = simpleHash(`alarm-${id}`);
+        if (isNativePlatform()) {
+            await cancelNativeNotifications([notificationId]);
+        }
         const { data, error } = await supabase.from('alarms').update({ label: updates.label, time: updates.time.toISOString() }).match({ id }).select();
         if (error) {
             console.error('Error updating alarm:', error);
             addTranscript('system', `Failed to update alarm.`);
         } else if (data) {
             setAlarms(prev => prev.map(a => a.id === id ? { ...data[0], id: data[0].id.toString(), time: new Date(data[0].time) } : a).sort((a,b) => a.time.getTime() - b.time.getTime()));
+            if (isNativePlatform()) {
+                await scheduleNativeNotification({ id: notificationId, title: 'Alarm', body: updates.label, scheduleAt: updates.time });
+            }
         }
     }, [addTranscript]);
 
     const deleteEvent = useCallback(async (id: string) => {
+         if (isNativePlatform()) {
+            await cancelNativeNotifications([simpleHash(`event-${id}`)]);
+        }
         const { error } = await supabase.from('events').delete().match({ id });
         if (error) {
             console.error('Error deleting event:', error);
@@ -87,61 +110,78 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
     }, [addTranscript]);
 
     const updateEvent = useCallback(async (id: string, updates: { title: string, dateTime: Date }) => {
+        const notificationId = simpleHash(`event-${id}`);
+        if (isNativePlatform()) {
+            await cancelNativeNotifications([notificationId]);
+        }
         const { data, error } = await supabase.from('events').update({ title: updates.title, dateTime: updates.dateTime.toISOString() }).match({ id }).select();
         if (error) {
             console.error('Error updating event:', error);
             addTranscript('system', `Failed to update event.`);
         } else if (data) {
             setEvents(prev => prev.map(e => e.id === id ? { ...data[0], dateTime: new Date(data[0].dateTime) } : e).sort((a,b) => a.dateTime.getTime() - b.dateTime.getTime()));
+            if (isNativePlatform()) {
+                await scheduleNativeNotification({ id: notificationId, title: 'Event Reminder', body: updates.title, scheduleAt: updates.dateTime });
+            }
         }
     }, [addTranscript]);
 
-    // Fetch initial data from Supabase
+    // Fetch initial data from Supabase and sync notifications
     useEffect(() => {
         if (!user) return;
-        const fetchInitialData = async () => {
+        const syncDataAndNotifications = async () => {
             const { data: eventsData, error: eventsError } = await supabase.from('events').select('*').eq('user_id', user.id).order('dateTime', { ascending: true });
             if (eventsError) console.error('Error fetching events:', eventsError);
-            else if (eventsData) setEvents(eventsData.map(e => ({ ...e, dateTime: new Date(e.dateTime) })));
+            else if (eventsData) {
+                const mappedEvents = eventsData.map(e => ({ ...e, dateTime: new Date(e.dateTime) }));
+                setEvents(mappedEvents);
+                if (isNativePlatform()) {
+                    mappedEvents.forEach(event => scheduleNativeNotification({ id: simpleHash(`event-${event.id}`), title: 'Event Reminder', body: event.title, scheduleAt: event.dateTime }));
+                }
+            }
 
             const { data: alarmsData, error: alarmsError } = await supabase.from('alarms').select('*').eq('user_id', user.id).order('time', { ascending: true });
             if (alarmsError) console.error('Error fetching alarms:', alarmsError);
-            else if (alarmsData) setAlarms(alarmsData.map(a => ({ ...a, id: a.id.toString(), time: new Date(a.time) })));
+            else if (alarmsData) {
+                const mappedAlarms = alarmsData.map(a => ({ ...a, id: a.id.toString(), time: new Date(a.time) }));
+                setAlarms(mappedAlarms);
+                 if (isNativePlatform()) {
+                    mappedAlarms.forEach(alarm => scheduleNativeNotification({ id: simpleHash(`alarm-${alarm.id}`), title: 'Alarm', body: alarm.label, scheduleAt: alarm.time }));
+                }
+            }
         };
-        fetchInitialData();
+        syncDataAndNotifications();
     }, [user]);
 
-    // Check for due alarms and events
+    // Web Fallback: Check for due alarms and events via polling
     useEffect(() => {
+        if (isNativePlatform()) return; // This logic is only for web browsers
+
+        const firedNotificationIds = new Set<string>();
         const intervalId = setInterval(() => {
             const now = new Date();
             
             alarms.forEach(alarm => {
-                if (new Date(alarm.time) <= now) {
-                    if (!firedNotificationIds.has(`alarm-${alarm.id}`)) {
-                        scheduleNotification({ id: Date.now(), title: 'Alarm', body: alarm.label });
-                        playAlarmSound();
-                        addTranscript('system', `ALARM: ${alarm.label}`);
-                        setFiredNotificationIds(prev => new Set(prev).add(`alarm-${alarm.id}`));
-                        deleteAlarm(alarm.id);
-                    }
+                if (new Date(alarm.time) <= now && !firedNotificationIds.has(`alarm-${alarm.id}`)) {
+                    new Notification('Alarm', { body: alarm.label, icon: 'favicon.ico' });
+                    playAlarmSound();
+                    addTranscript('system', `ALARM: ${alarm.label}`);
+                    firedNotificationIds.add(`alarm-${alarm.id}`);
                 }
             });
 
             events.forEach(event => {
-                if (new Date(event.dateTime) <= now) {
-                    if (!firedNotificationIds.has(`event-${event.id}`)) {
-                        scheduleNotification({ id: Date.now(), title: 'Event Reminder', body: event.title });
-                        addTranscript('system', `EVENT REMINDER: ${event.title}`);
-                        setFiredNotificationIds(prev => new Set(prev).add(`event-${event.id}`));
-                    }
+                if (new Date(event.dateTime) <= now && !firedNotificationIds.has(`event-${event.id}`)) {
+                     new Notification('Event Reminder', { body: event.title, icon: 'favicon.ico' });
+                    addTranscript('system', `EVENT REMINDER: ${event.title}`);
+                    firedNotificationIds.add(`event-${event.id}`);
                 }
             });
 
-        }, 5000); // Check every 5 seconds
+        }, 5000);
 
         return () => clearInterval(intervalId);
-    }, [alarms, events, addTranscript, deleteAlarm, firedNotificationIds]);
+    }, [alarms, events, addTranscript]);
 
 
     const stopConversation = useCallback(() => {
@@ -192,11 +232,8 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                 const newWindow = window.open(fullUrl, '_blank');
 
                 if (newWindow) {
-                    // The window was opened successfully.
                     return `Opening ${url} now.`;
                 } else {
-                    // The window was blocked by a pop-up blocker.
-                    // The agent's response will include the full URL, and the UI will make it a clickable link.
                     return `I couldn't open ${url} directly, as it was likely blocked by a pop-up blocker. I have provided the link in the chat for you to click: ${fullUrl}`;
                 }
             },
@@ -214,9 +251,17 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                     if (isNaN(dateTime.getTime())) throw new Error("Invalid date or time format.");
                     const { data, error } = await supabase.from('events').insert([{ title, dateTime: dateTime.toISOString(), user_id: user.id }]).select();
                     if (error) throw error;
-                    if (data) setEvents(prev => [...prev, ...data.map(e => ({ ...e, dateTime: new Date(e.dateTime) }))].sort((a, b) => a.dateTime.getTime() - b.dateTime.getTime()));
-                    addTranscript('system', `Event Scheduled: "${title}" on ${dateTime.toLocaleString()}`);
-                    return `Event "${title}" scheduled for ${dateTime.toLocaleString()}.`;
+                    
+                    if (data && data[0]) {
+                        const newEvent = { ...data[0], dateTime: new Date(data[0].dateTime) };
+                        setEvents(prev => [...prev, newEvent].sort((a, b) => a.dateTime.getTime() - b.dateTime.getTime()));
+                        if (isNativePlatform()) {
+                           await scheduleNativeNotification({ id: simpleHash(`event-${newEvent.id}`), title: 'Event Reminder', body: newEvent.title, scheduleAt: newEvent.dateTime });
+                        }
+                        addTranscript('system', `Event Scheduled: "${title}" on ${dateTime.toLocaleString()}`);
+                        return `Event "${title}" scheduled for ${dateTime.toLocaleString()}.`;
+                    }
+                    return "Failed to save the event.";
                 } catch (error) { return "I couldn't schedule that. Please provide the date and time in YYYY-MM-DD and HH:MM format."; }
             },
             setAlarm: async (label: string, time: string) => {
@@ -228,9 +273,17 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                     if (alarmTime <= now) alarmTime.setDate(alarmTime.getDate() + 1);
                     const { data, error } = await supabase.from('alarms').insert([{ label, time: alarmTime.toISOString(), user_id: user.id }]).select();
                     if (error) throw error;
-                    if (data) setAlarms(prev => [...prev, ...data.map(a => ({ ...a, id: a.id.toString(), time: new Date(a.time) }))].sort((a, b) => a.time.getTime() - b.time.getTime()));
-                    addTranscript('system', `Alarm Set: "${label}" for ${alarmTime.toLocaleTimeString()}`);
-                    return `Alarm "${label}" set for ${alarmTime.toLocaleTimeString()}.`;
+
+                    if (data && data[0]) {
+                        const newAlarm = { ...data[0], id: data[0].id.toString(), time: new Date(data[0].time) };
+                        setAlarms(prev => [...prev, newAlarm].sort((a, b) => a.time.getTime() - b.time.getTime()));
+                         if (isNativePlatform()) {
+                           await scheduleNativeNotification({ id: simpleHash(`alarm-${newAlarm.id}`), title: 'Alarm', body: newAlarm.label, scheduleAt: newAlarm.time });
+                        }
+                        addTranscript('system', `Alarm Set: "${label}" for ${alarmTime.toLocaleTimeString()}`);
+                        return `Alarm "${label}" set for ${alarmTime.toLocaleTimeString()}.`;
+                    }
+                    return "Failed to save the alarm.";
                 } catch (error) { return "I couldn't set that alarm. Please provide the time in HH:MM format."; }
             },
         };

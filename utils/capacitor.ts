@@ -1,6 +1,6 @@
 
 import { Capacitor } from '@capacitor/core';
-import { PushNotifications, Token, ActionPerformed } from '@capacitor/push-notifications';
+import { PushNotifications } from '@capacitor/push-notifications';
 import { AppLauncher } from '@capacitor/app-launcher';
 
 export const isNativePlatform = () => Capacitor.isNativePlatform();
@@ -15,11 +15,9 @@ export const requestNotificationPermission = async () => {
       permStatus = await PushNotifications.requestPermissions();
     }
     if (permStatus.receive !== 'granted') {
-      console.warn('User denied permissions!');
+      console.warn('User denied permissions for push notifications!');
     } else {
         console.log('Push notification permissions granted.');
-        // It's good practice to register for push notifications here if you plan to use a service like FCM
-        // await PushNotifications.register();
     }
   } else {
     // Web notifications fallback
@@ -30,33 +28,52 @@ export const requestNotificationPermission = async () => {
 };
 
 /**
- * Schedules a notification, using native push notifications if available,
- * otherwise falling back to the web Notification API.
+ * Schedules a single local notification using the native plugin. This is reliable even if the app is closed.
  */
-export const scheduleNotification = async (notification: { id: number, title: string, body: string }) => {
-  if (isNativePlatform()) {
-    try {
-        await PushNotifications.schedule({
-            notifications: [
-                {
-                    title: notification.title,
-                    body: notification.body,
-                    id: notification.id,
-                    schedule: { at: new Date(Date.now() + 1000) }, // Schedule for 1 second from now
-                    sound: 'default',
-                    smallIcon: 'res://mipmap-hdpi/ic_launcher.png',
-                },
-            ],
-        });
-    } catch (e) {
-        console.error("Error scheduling native notification", e);
-    }
-  } else {
-    if (Notification.permission === 'granted') {
-      new Notification(notification.title, { body: notification.body, icon: 'favicon.ico' });
-    }
+export const scheduleNativeNotification = async (notification: { id: number, title: string, body: string, scheduleAt: Date }) => {
+  if (!isNativePlatform()) return;
+
+  // Do not schedule notifications for past events
+  if (notification.scheduleAt.getTime() <= Date.now()) {
+    console.log("Skipping schedule for a notification in the past:", notification.title);
+    return;
+  }
+
+  try {
+    await PushNotifications.schedule({
+      notifications: [
+        {
+          title: notification.title,
+          body: notification.body,
+          id: notification.id,
+          schedule: { at: notification.scheduleAt },
+          sound: 'default',
+          smallIcon: 'res://mipmap-hdpi/ic_launcher.png', // Ensure this icon exists in your android/app/src/main/res folders
+        },
+      ],
+    });
+  } catch (e) {
+    console.error("Error scheduling native notification", e);
   }
 };
+
+/**
+ * Cancels pending local notifications by their IDs.
+ */
+export const cancelNativeNotifications = async (ids: number[]) => {
+  if (!isNativePlatform()) return;
+  
+  try {
+    const pending = await PushNotifications.getPending();
+    const notificationsToCancel = pending.notifications.filter(notif => ids.includes(notif.id));
+    if (notificationsToCancel.length > 0) {
+      await PushNotifications.cancel({ notifications: notificationsToCancel });
+    }
+  } catch (e) {
+    console.error("Error cancelling native notifications", e);
+  }
+};
+
 
 /**
  * A map of common app names to their URL schemes.
