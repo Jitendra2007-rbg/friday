@@ -40,7 +40,7 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user, 
   };
 
   return (
-    <div className="flex flex-col items-center justify-center p-4 font-sans min-h-screen">
+    <div className="flex flex-col items-center justify-center p-4 font-sans h-full">
        <div className="absolute top-4 right-4 flex items-center gap-4 text-sm">
         <div className="text-right">
             <p className="text-gray-300">{user.email}</p>

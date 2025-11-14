@@ -74,7 +74,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   };
 
   if (loading) {
-    return <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">Loading...</div>;
+    return <div className="h-full bg-gray-900 text-white flex items-center justify-center">Loading...</div>;
   }
 
   return (
@@ -125,7 +125,7 @@ const MainApp: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900">
+    <div className="h-full bg-gray-900">
       {renderPage()}
     </div>
   );

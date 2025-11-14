@@ -26,7 +26,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onSwitchToSignup }) => {
   };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white p-4">
+    <div className="flex flex-col items-center justify-center h-full bg-gray-900 text-white p-4">
       <div className="w-full max-w-md bg-gray-800/50 rounded-lg p-8 shadow-lg">
         <h1 className="text-3xl font-bold text-center mb-2">Welcome Back</h1>
         <p className="text-center text-gray-400 mb-6">Log in to your Voice Agent</p>

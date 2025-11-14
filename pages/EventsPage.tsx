@@ -40,7 +40,7 @@ const EventsPage: React.FC<EventsPageProps> = ({ events, navigate, deleteEvent, 
   };
 
   return (
-    <div className="flex flex-col items-center justify-center p-4 font-sans min-h-screen">
+    <div className="flex flex-col items-center justify-center p-4 font-sans h-full">
       <div className="w-full max-w-2xl bg-gray-800/50 rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
             <h1 className="text-2xl font-bold flex items-center gap-2 text-gray-200">
