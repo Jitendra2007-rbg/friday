@@ -247,13 +247,20 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
             },
             scheduleEvent: async (title: string, date: string, time: string) => {
                 try {
+                    if (!user || !user.id) return "I can't schedule an event without a logged-in user.";
                     const dateTime = new Date(`${date}T${time}`);
                     if (isNaN(dateTime.getTime())) throw new Error("Invalid date or time format.");
-                    const { data, error } = await supabase.from('events').insert([{ title, dateTime: dateTime.toISOString(), user_id: user.id }]).select();
+                    
+                    const { data, error } = await supabase
+                        .from('events')
+                        .insert({ title, dateTime: dateTime.toISOString(), user_id: user.id })
+                        .select()
+                        .single();
+            
                     if (error) throw error;
                     
-                    if (data && data[0]) {
-                        const newEvent = { ...data[0], dateTime: new Date(data[0].dateTime) };
+                    if (data) {
+                        const newEvent = { ...data, dateTime: new Date(data.dateTime) };
                         setEvents(prev => [...prev, newEvent].sort((a, b) => a.dateTime.getTime() - b.dateTime.getTime()));
                         if (isNativePlatform()) {
                            await scheduleNativeNotification({ id: simpleHash(`event-${newEvent.id}`), title: 'Event Reminder', body: newEvent.title, scheduleAt: newEvent.dateTime });
@@ -261,21 +268,33 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                         addTranscript('system', `Event Scheduled: "${title}" on ${dateTime.toLocaleString()}`);
                         return `Event "${title}" scheduled for ${dateTime.toLocaleString()}.`;
                     }
-                    return "Failed to save the event.";
-                } catch (error) { return "I couldn't schedule that. Please provide the date and time in YYYY-MM-DD and HH:MM format."; }
+                    return "Failed to save the event. The database did not confirm the action.";
+                } catch (error) { 
+                    console.error("Error in scheduleEvent:", error);
+                    return "I had a problem scheduling that event. Please check the details or try again."; 
+                }
             },
             setAlarm: async (label: string, time: string) => {
                 try {
+                    if (!user || !user.id) return "I can't set an alarm without a logged-in user.";
                     const now = new Date();
                     const [hours, minutes] = time.split(':').map(Number);
+                    if (isNaN(hours) || isNaN(minutes)) throw new Error("Invalid time format.");
+            
                     const alarmTime = new Date();
                     alarmTime.setHours(hours, minutes, 0, 0);
                     if (alarmTime <= now) alarmTime.setDate(alarmTime.getDate() + 1);
-                    const { data, error } = await supabase.from('alarms').insert([{ label, time: alarmTime.toISOString(), user_id: user.id }]).select();
+            
+                    const { data, error } = await supabase
+                        .from('alarms')
+                        .insert({ label, time: alarmTime.toISOString(), user_id: user.id })
+                        .select()
+                        .single();
+            
                     if (error) throw error;
-
-                    if (data && data[0]) {
-                        const newAlarm = { ...data[0], id: data[0].id.toString(), time: new Date(data[0].time) };
+            
+                    if (data) {
+                        const newAlarm = { ...data, id: data.id.toString(), time: new Date(data.time) };
                         setAlarms(prev => [...prev, newAlarm].sort((a, b) => a.time.getTime() - b.time.getTime()));
                          if (isNativePlatform()) {
                            await scheduleNativeNotification({ id: simpleHash(`alarm-${newAlarm.id}`), title: 'Alarm', body: newAlarm.label, scheduleAt: newAlarm.time });
@@ -283,8 +302,11 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                         addTranscript('system', `Alarm Set: "${label}" for ${alarmTime.toLocaleTimeString()}`);
                         return `Alarm "${label}" set for ${alarmTime.toLocaleTimeString()}.`;
                     }
-                    return "Failed to save the alarm.";
-                } catch (error) { return "I couldn't set that alarm. Please provide the time in HH:MM format."; }
+                    return "Failed to save the alarm. The database did not confirm the action.";
+                } catch (error) { 
+                    console.error("Error in setAlarm:", error);
+                    return "I had a problem setting that alarm. Please check the time or try again."; 
+                }
             },
         };
 
