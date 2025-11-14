@@ -25,3 +25,15 @@ export const BackIcon: React.FC<{ className?: string }> = ({ className }) => (
     <path fillRule="evenodd" d="M10.707 4.293a1 1 0 010 1.414L5.414 11H20a1 1 0 110 2H5.414l5.293 5.293a1 1 0 01-1.414 1.414l-7-7a1 1 0 010-1.414l7-7a1 1 0 011.414 0z" clipRule="evenodd" />
   </svg>
 );
+
+export const TrashIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+    <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0015 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+  </svg>
+);
+
+export const EditIcon: React.FC<{ className?: string }> = ({ className }) => (
+    <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M17.293 2.293a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-13 13a1 1 0 01-.707.293H3a1 1 0 01-1-1v-4.586a1 1 0 01.293-.707l13-13zM16 5.414l-1.293 1.293-2-2L14.586 3 16 5.414zM5 19h2.586l9-9L14 7.414l-9 9V19z" />
+    </svg>
+);

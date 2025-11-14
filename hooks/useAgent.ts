@@ -1,35 +1,10 @@
+
 import { useState, useRef, useCallback, useEffect } from 'react';
-// FIX: The `LiveSession` type is not exported from the '@google/genai' module.
 import { GoogleGenAI, FunctionDeclaration, Type, LiveServerMessage, Modality, Blob } from '@google/genai';
-import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry } from '../types';
+import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
 import { decode, encode, decodeAudioData, playAlarmSound } from '../utils/audio';
-
-const WAKE_WORDS = ["hey agent", "hey ridat", "friday", "hey friday", "hey"];
-
-// Load Capacitor modules at runtime if available. This avoids compile-time errors
-// in environments where Capacitor packages are not installed (web development).
-let isCapacitor = false;
-let Capacitor: any = null;
-let Browser: any = null;
-let Permissions: any = null;
-
-// Dynamically attempt to load Capacitor modules at runtime. Use ts-ignore to
-// avoid type-checker errors in environments without the packages installed.
-(async () => {
-    try {
-        // @ts-ignore
-        const cap = await import('@capacitor/core');
-        Capacitor = cap.Capacitor ?? cap;
-        // @ts-ignore
-        const b = await import('@capacitor/browser');
-        Browser = b.Browser ?? b;
-    // Rely on any Permissions API exposed via Capacitor at runtime (e.g. Capacitor.Plugins.Permissions
-    // or Capacitor.Permissions). Do not require a separate permissions package at build time.
-        isCapacitor = typeof Capacitor?.isNativePlatform === 'function' ? Capacitor.isNativePlatform() : false;
-    } catch (e) {
-        // Capacitor not available in this environment (likely web). Keep isCapacitor=false.
-    }
-})();
+import { supabase } from '../utils/supabase';
+import { isNativePlatform, scheduleNotification, launchAppByUrl } from '../utils/capacitor';
 
 const functionDeclarations: FunctionDeclaration[] = [
     {
@@ -40,7 +15,7 @@ const functionDeclarations: FunctionDeclaration[] = [
     {
         name: 'launchApp',
         parameters: { type: Type.OBJECT, properties: { appName: { type: Type.STRING } }, required: ['appName'] },
-        description: "Launches a desktop application. For example, 'launch Discord'."
+        description: "Launches a native mobile or desktop application. For example, 'launch Discord'."
     },
     {
         name: 'scheduleEvent',
@@ -54,19 +29,23 @@ const functionDeclarations: FunctionDeclaration[] = [
     }
 ];
 
-export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyError: () => void }) => {
+export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyError: () => void }) => {
     const [agentStatus, setAgentStatus] = useState<AgentStatus>(AgentStatus.IDLE);
     const [transcriptHistory, setTranscriptHistory] = useState<TranscriptEntry[]>([]);
     const [events, setEvents] = useState<CalendarEvent[]>([]);
     const [alarms, setAlarms] = useState<Alarm[]>([]);
+    const [firedNotificationIds, setFiredNotificationIds] = useState(new Set<string>());
 
-    // FIX: The `LiveSession` type is not exported, using `any` for the session object promise.
+    // The 'LiveSession' type is not exported from '@google/genai', so 'any' is used.
     const sessionPromiseRef = useRef<Promise<any> | null>(null);
     const mediaStreamRef = useRef<MediaStream | null>(null);
     const inputAudioContextRef = useRef<AudioContext | null>(null);
     const outputAudioContextRef = useRef<AudioContext | null>(null);
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
     const wakeWordRecognitionRef = useRef<any>(null);
+
+    const WAKE_WORDS = user ? [`hey ${user.agentName.toLowerCase()}`, user.agentName.toLowerCase()] : ['hey friday'];
+    const apiKey = user?.apiKey;
 
     const currentInputTranscription = useRef('');
     const currentOutputTranscription = useRef('');
@@ -76,6 +55,94 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
     const addTranscript = useCallback((speaker: 'user' | 'agent' | 'system', text: string) => {
         setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), speaker, text }]);
     }, []);
+
+    const deleteAlarm = useCallback(async (id: string) => {
+        const { error } = await supabase.from('alarms').delete().match({ id });
+        if (error) {
+            console.error('Error deleting alarm:', error);
+            addTranscript('system', `Failed to delete alarm.`);
+        } else {
+            setAlarms(prev => prev.filter(a => a.id !== id));
+        }
+    }, [addTranscript]);
+    
+    const updateAlarm = useCallback(async (id: string, updates: { label: string, time: Date }) => {
+        const { data, error } = await supabase.from('alarms').update({ label: updates.label, time: updates.time.toISOString() }).match({ id }).select();
+        if (error) {
+            console.error('Error updating alarm:', error);
+            addTranscript('system', `Failed to update alarm.`);
+        } else if (data) {
+            setAlarms(prev => prev.map(a => a.id === id ? { ...data[0], id: data[0].id.toString(), time: new Date(data[0].time) } : a).sort((a,b) => a.time.getTime() - b.time.getTime()));
+        }
+    }, [addTranscript]);
+
+    const deleteEvent = useCallback(async (id: string) => {
+        const { error } = await supabase.from('events').delete().match({ id });
+        if (error) {
+            console.error('Error deleting event:', error);
+            addTranscript('system', `Failed to delete event.`);
+        } else {
+            setEvents(prev => prev.filter(e => e.id !== id));
+        }
+    }, [addTranscript]);
+
+    const updateEvent = useCallback(async (id: string, updates: { title: string, dateTime: Date }) => {
+        const { data, error } = await supabase.from('events').update({ title: updates.title, dateTime: updates.dateTime.toISOString() }).match({ id }).select();
+        if (error) {
+            console.error('Error updating event:', error);
+            addTranscript('system', `Failed to update event.`);
+        } else if (data) {
+            setEvents(prev => prev.map(e => e.id === id ? { ...data[0], dateTime: new Date(data[0].dateTime) } : e).sort((a,b) => a.dateTime.getTime() - b.dateTime.getTime()));
+        }
+    }, [addTranscript]);
+
+    // Fetch initial data from Supabase
+    useEffect(() => {
+        if (!user) return;
+        const fetchInitialData = async () => {
+            const { data: eventsData, error: eventsError } = await supabase.from('events').select('*').eq('user_id', user.id).order('dateTime', { ascending: true });
+            if (eventsError) console.error('Error fetching events:', eventsError);
+            else if (eventsData) setEvents(eventsData.map(e => ({ ...e, dateTime: new Date(e.dateTime) })));
+
+            const { data: alarmsData, error: alarmsError } = await supabase.from('alarms').select('*').eq('user_id', user.id).order('time', { ascending: true });
+            if (alarmsError) console.error('Error fetching alarms:', alarmsError);
+            else if (alarmsData) setAlarms(alarmsData.map(a => ({ ...a, id: a.id.toString(), time: new Date(a.time) })));
+        };
+        fetchInitialData();
+    }, [user]);
+
+    // Check for due alarms and events
+    useEffect(() => {
+        const intervalId = setInterval(() => {
+            const now = new Date();
+            
+            alarms.forEach(alarm => {
+                if (new Date(alarm.time) <= now) {
+                    if (!firedNotificationIds.has(`alarm-${alarm.id}`)) {
+                        scheduleNotification({ id: Date.now(), title: 'Alarm', body: alarm.label });
+                        playAlarmSound();
+                        addTranscript('system', `ALARM: ${alarm.label}`);
+                        setFiredNotificationIds(prev => new Set(prev).add(`alarm-${alarm.id}`));
+                        deleteAlarm(alarm.id);
+                    }
+                }
+            });
+
+            events.forEach(event => {
+                if (new Date(event.dateTime) <= now) {
+                    if (!firedNotificationIds.has(`event-${event.id}`)) {
+                        scheduleNotification({ id: Date.now(), title: 'Event Reminder', body: event.title });
+                        addTranscript('system', `EVENT REMINDER: ${event.title}`);
+                        setFiredNotificationIds(prev => new Set(prev).add(`event-${event.id}`));
+                    }
+                }
+            });
+
+        }, 5000); // Check every 5 seconds
+
+        return () => clearInterval(intervalId);
+    }, [alarms, events, addTranscript, deleteAlarm, firedNotificationIds]);
+
 
     const stopConversation = useCallback(() => {
         if (agentStatus === AgentStatus.IDLE && !sessionPromiseRef.current) return;
@@ -93,12 +160,17 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
         sessionPromiseRef.current = null;
 
         if (agentStatus !== AgentStatus.ERROR) {
-             addTranscript('system', 'Session ended. Say "Hey Agent" to start again.');
+             addTranscript('system', `Session ended. Say "Hey ${user?.agentName || 'Friday'}" to start again.`);
         }
         setAgentStatus(AgentStatus.IDLE);
-    }, [addTranscript, agentStatus]);
+    }, [addTranscript, agentStatus, user]);
 
     const startConversation = useCallback(async () => {
+        if (!user || !apiKey) {
+            addTranscript('system', 'API Key is not configured for this user. Conversation cannot start.');
+            setAgentStatus(AgentStatus.ERROR);
+            return;
+        }
         setAgentStatus(AgentStatus.LISTENING);
         if (wakeWordRecognitionRef.current) {
             wakeWordRecognitionRef.current.stop();
@@ -106,109 +178,57 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
         setTranscriptHistory([]);
         addTranscript('system', 'Listening...');
         
-        // FIX: Moved agentFunctions inside the callback to prevent stale closures on state setters.
         const agentFunctions = {
             openWebsite: (url: string) => {
-                // Keep original function declaration but attempt native app open on Capacitor builds.
                 if (!url || typeof url !== 'string') {
                     return "I can't open a website without a valid URL.";
                 }
-                const siteName = url.trim().toLowerCase();
-                const siteMap: Record<string, { web: string; app?: string }> = {
-                    youtube: { web: "https://www.youtube.com", app: "vnd.youtube://" },
-                    instagram: { web: "https://www.instagram.com", app: "instagram://" },
-                    twitter: { web: "https://twitter.com", app: "twitter://" },
-                    spotify: { web: "https://open.spotify.com", app: "spotify://" },
-                    gmail: { web: "https://mail.google.com", app: "googlegmail://" },
-                    linkedin: { web: "https://www.linkedin.com", app: "linkedin://" },
-                    amazon: { web: "https://www.amazon.in", app: "amazon://" },
-                    facebook: { web: "https://www.facebook.com", app: "fb://" },
-                };
+                let fullUrl = url;
+                if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
+                    fullUrl = `https://${fullUrl}`;
+                }
+                
+                addTranscript('system', `Attempting to open: ${fullUrl}`);
+                const newWindow = window.open(fullUrl, '_blank');
 
-                const target = siteMap[siteName];
-
-                // Helper to open web fallback in both web and Capacitor
-                const openWeb = (webUrl: string) => {
-                    try {
-                        // In web, use window.open. In capacitor/native, use Browser.open.
-                        if (isCapacitor) {
-                            Browser.open({ url: webUrl }).catch(console.error);
-                        } else {
-                            window.open(webUrl, '_blank');
-                        }
-                        addTranscript('system', `Attempting to open: ${webUrl}`);
-                    } catch (e) {
-                        console.error('Failed to open web url', e);
-                    }
-                };
-
-                (async () => {
-                    try {
-                        if (isCapacitor && target?.app) {
-                            // Try deep link first
-                            await Browser.open({ url: target.app });
-                            addTranscript('system', `Opened ${url} app.`);
-                            return;
-                        }
-                        if (target?.web) {
-                            openWeb(target.web);
-                            return;
-                        }
-
-                        // If not a known site, try to open the provided url as-is, then fallback to search
-                        let fullUrl = url;
-                        if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
-                            fullUrl = `https://${fullUrl}`;
-                        }
-                        if (isCapacitor) {
-                            await Browser.open({ url: fullUrl });
-                        } else {
-                            window.open(fullUrl, '_blank');
-                        }
-                        addTranscript('system', `Attempting to open: ${fullUrl}`);
-                    } catch (err) {
-                        // Fallback to web version if deep link fails
-                        console.warn('Deep link failed, falling back to web', err);
-                        if (target?.web) {
-                            try { await Browser.open({ url: target.web }); } catch { openWeb(target.web); }
-                        } else {
-                            const fallback = `https://www.google.com/search?q=${encodeURIComponent(url)}`;
-                            openWeb(fallback);
-                        }
-                    }
-                })();
-
-                return `Opening ${url} now.`;
+                if (newWindow) {
+                    // The window was opened successfully.
+                    return `Opening ${url} now.`;
+                } else {
+                    // The window was blocked by a pop-up blocker.
+                    // The agent's response will include the full URL, and the UI will make it a clickable link.
+                    return `I couldn't open ${url} directly, as it was likely blocked by a pop-up blocker. I have provided the link in the chat for you to click: ${fullUrl}`;
+                }
             },
-            launchApp: (appName: string) => {
-                addTranscript('system', `User tried to launch desktop app: ${appName}.`);
-                return `As a web-based assistant, I can't open desktop applications directly. However, I can open any website for you.`;
+            launchApp: async (appName: string) => {
+                addTranscript('system', `User wants to launch app: ${appName}.`);
+                if (!isNativePlatform()) {
+                    return `As a web-based assistant, I am running in a browser and cannot launch native desktop or mobile applications. I can open any website for you if you provide the URL.`;
+                }
+                const result = await launchAppByUrl(appName);
+                return result;
             },
-            scheduleEvent: (title: string, date: string, time: string) => {
+            scheduleEvent: async (title: string, date: string, time: string) => {
                 try {
                     const dateTime = new Date(`${date}T${time}`);
                     if (isNaN(dateTime.getTime())) throw new Error("Invalid date or time format.");
-                    const newEvent: CalendarEvent = { id: Date.now().toString(), title, dateTime };
-                    setEvents(prev => [...prev, newEvent].sort((a, b) => a.dateTime.getTime() - b.dateTime.getTime()));
+                    const { data, error } = await supabase.from('events').insert([{ title, dateTime: dateTime.toISOString(), user_id: user.id }]).select();
+                    if (error) throw error;
+                    if (data) setEvents(prev => [...prev, ...data.map(e => ({ ...e, dateTime: new Date(e.dateTime) }))].sort((a, b) => a.dateTime.getTime() - b.dateTime.getTime()));
                     addTranscript('system', `Event Scheduled: "${title}" on ${dateTime.toLocaleString()}`);
                     return `Event "${title}" scheduled for ${dateTime.toLocaleString()}.`;
                 } catch (error) { return "I couldn't schedule that. Please provide the date and time in YYYY-MM-DD and HH:MM format."; }
             },
-            setAlarm: (label: string, time: string) => {
+            setAlarm: async (label: string, time: string) => {
                 try {
                     const now = new Date();
                     const [hours, minutes] = time.split(':').map(Number);
                     const alarmTime = new Date();
                     alarmTime.setHours(hours, minutes, 0, 0);
                     if (alarmTime <= now) alarmTime.setDate(alarmTime.getDate() + 1);
-                    const delay = alarmTime.getTime() - now.getTime();
-                    const timeoutId = window.setTimeout(() => {
-                        playAlarmSound();
-                        addTranscript('system', `ALARM: ${label}`);
-                        setAlarms(prev => prev.filter(a => a.timeoutId !== timeoutId));
-                    }, delay);
-                    const newAlarm: Alarm = { id: Date.now().toString(), label, time: alarmTime, timeoutId };
-                    setAlarms(prev => [...prev, newAlarm].sort((a, b) => a.time.getTime() - b.time.getTime()));
+                    const { data, error } = await supabase.from('alarms').insert([{ label, time: alarmTime.toISOString(), user_id: user.id }]).select();
+                    if (error) throw error;
+                    if (data) setAlarms(prev => [...prev, ...data.map(a => ({ ...a, id: a.id.toString(), time: new Date(a.time) }))].sort((a, b) => a.time.getTime() - b.time.getTime()));
                     addTranscript('system', `Alarm Set: "${label}" for ${alarmTime.toLocaleTimeString()}`);
                     return `Alarm "${label}" set for ${alarmTime.toLocaleTimeString()}.`;
                 } catch (error) { return "I couldn't set that alarm. Please provide the time in HH:MM format."; }
@@ -216,28 +236,6 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
         };
 
         try {
-            // If running on a native Capacitor platform, ensure microphone permission is requested first.
-            if (isCapacitor) {
-                try {
-                    // Prefer the dynamically imported Permissions object if available
-                    const perms = Permissions ?? (Capacitor?.Plugins?.Permissions ?? null);
-                    if (perms && typeof perms.query === 'function') {
-                        const micStatus = await perms.query({ name: 'microphone' } as any);
-                        if (micStatus?.state !== 'granted') {
-                            try { await perms.request({ name: 'microphone' } as any); } catch {}
-                        }
-                    } else if (Capacitor?.Permissions && typeof Capacitor.Permissions.query === 'function') {
-                        const micStatus = await Capacitor.Permissions.query({ name: 'microphone' } as any);
-                        if (micStatus?.state !== 'granted') {
-                            try { await Capacitor.Permissions.request({ name: 'microphone' } as any); } catch {}
-                        }
-                    }
-                } catch (permErr) {
-                    // Continue to getUserMedia even if permission APIs are unavailable or fail.
-                    console.warn('Capacitor microphone permission check failed', permErr);
-                }
-            }
-
             mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
             inputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
             outputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
@@ -253,7 +251,7 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
                 config: {
                     responseModalities: [Modality.AUDIO],
                     speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-                    systemInstruction: `You are a helpful and conversational voice assistant named Friday.
+                    systemInstruction: `You are a helpful and conversational voice assistant named ${user.agentName}.
                     Your first response in any new conversation MUST be a warm, friendly greeting like 'Hey there, how can I help you?'. Do not wait for the user to speak first; greet them immediately after you are activated.
                     You MUST strictly adhere to speaking English unless the user speaks Telugu. Never use any other languages like Hindi.
                     You MUST operate on Indian Standard Time (IST). When asked for the time or date, provide it in IST. The current date is ${new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}.
@@ -269,7 +267,6 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
                 },
                 callbacks: {
                     onopen: () => {
-                        // Send an initial prompt to trigger the model's greeting based on system instructions.
                         sessionPromiseRef.current?.then((session) => {
                             session.sendRealtimeInput({ text: "[SYSTEM: User has just activated you. Please provide your initial greeting now.]" });
                         });
@@ -285,11 +282,8 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
                         scriptProcessorRef.current.connect(inputAudioContextRef.current!.destination);
                     },
                     onmessage: async (message: LiveServerMessage) => {
-                        // FIX: Add a guard clause to prevent errors if the session is closed while a message is being processed.
                         const currentOutputAudioContext = outputAudioContextRef.current;
-                        if (!currentOutputAudioContext) {
-                            return; // Ignore lingering messages if the session is closed.
-                        }
+                        if (!currentOutputAudioContext) return;
 
                        if (message.serverContent?.inputTranscription) {
                             const text = message.serverContent.inputTranscription.text;
@@ -328,35 +322,19 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
                                     const args = fc.args as Record<string, unknown>;
                                     switch (fc.name) {
                                         case 'openWebsite':
-                                            if (typeof args.url === 'string') {
-                                                result = agentFunctions.openWebsite(args.url);
-                                            } else {
-                                                throw new Error('Missing or invalid "url" argument.');
-                                            }
+                                            result = typeof args.url === 'string' ? agentFunctions.openWebsite(args.url) : "Missing URL.";
                                             break;
                                         case 'launchApp':
-                                            if (typeof args.appName === 'string') {
-                                                result = agentFunctions.launchApp(args.appName);
-                                            } else {
-                                                throw new Error('Missing or invalid "appName" argument.');
-                                            }
+                                            result = typeof args.appName === 'string' ? await agentFunctions.launchApp(args.appName) : "Missing App Name.";
                                             break;
                                         case 'scheduleEvent':
-                                            if (typeof args.title === 'string' && typeof args.date === 'string' && typeof args.time === 'string') {
-                                                result = agentFunctions.scheduleEvent(args.title, args.date, args.time);
-                                            } else {
-                                                throw new Error('Missing or invalid arguments for scheduleEvent.');
-                                            }
+                                            result = (typeof args.title === 'string' && typeof args.date === 'string' && typeof args.time === 'string') ? await agentFunctions.scheduleEvent(args.title, args.date, args.time) : "Missing event details.";
                                             break;
                                         case 'setAlarm':
-                                            if (typeof args.label === 'string' && typeof args.time === 'string') {
-                                                result = agentFunctions.setAlarm(args.label, args.time);
-                                            } else {
-                                                throw new Error('Missing or invalid arguments for setAlarm.');
-                                            }
+                                            result = (typeof args.label === 'string' && typeof args.time === 'string') ? await agentFunctions.setAlarm(args.label, args.time) : "Missing alarm details.";
                                             break;
                                         default:
-                                            throw new Error(`Function "${fc.name}" not found.`);
+                                            result = `Function "${fc.name}" not found.`;
                                     }
                                 } catch (error) {
                                     console.error(`Error executing tool call ${fc.name}:`, error);
@@ -402,10 +380,11 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
             addTranscript('system', 'Could not access microphone.');
             setAgentStatus(AgentStatus.ERROR);
         }
-    }, [addTranscript, stopConversation, apiKey, onApiKeyError]);
+    }, [addTranscript, stopConversation, apiKey, onApiKeyError, user]);
     
-    // Effect to manage wake word listener based on agent status
+    // Effect to manage wake word listener
     useEffect(() => {
+        if (!user) return;
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognition) {
             addTranscript('system', 'Voice recognition not supported in this browser.');
@@ -413,13 +392,10 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
         }
 
         if (agentStatus === AgentStatus.IDLE) {
-            if (wakeWordRecognitionRef.current) {
-                wakeWordRecognitionRef.current.stop();
-            }
+            if (wakeWordRecognitionRef.current) wakeWordRecognitionRef.current.stop();
             const recognition = new SpeechRecognition();
             recognition.continuous = true;
             recognition.interimResults = true;
-            recognition.lang = 'en-US'; // Prioritize English for wake word detection
             recognition.onresult = (event: any) => {
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
                     if (event.results[i].isFinal) {
@@ -431,12 +407,16 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
                 }
             };
             recognition.onerror = (event: any) => {
-                if (event.error === 'network') {
-                    addTranscript('system', 'Speech recognition failed due to a network error. Please check your internet connection.');
-                } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
-                    console.error('Speech recognition error', event.error);
-                    addTranscript('system', `Speech recognition error: ${event.error}. Please check microphone permissions.`);
+                let errorMessage = `Speech recognition error: ${event.error}.`;
+                switch (event.error) {
+                    case 'no-speech': return;
+                    case 'audio-capture': errorMessage = 'No microphone found. Ensure a microphone is installed and configured correctly.'; break;
+                    case 'not-allowed': errorMessage = 'Microphone access was denied. Please allow microphone access in your browser settings.'; break;
+                    case 'network': errorMessage = 'A network error occurred with the speech recognition service. Please check your internet connection.'; break;
+                    case 'aborted': return;
                 }
+                console.error('Wake word recognition error:', event);
+                addTranscript('system', errorMessage);
             };
             recognition.onend = () => {
                 if (agentStatus === AgentStatus.IDLE) {
@@ -444,9 +424,7 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
                 }
             };
             wakeWordRecognitionRef.current = recognition;
-            try {
-                recognition.start();
-            } catch (e) {
+            try { recognition.start(); } catch (e) {
                 console.error("Wake word recognition failed to start:", e);
                 addTranscript('system', 'Wake word listener failed to start.');
             }
@@ -463,18 +441,15 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
                 wakeWordRecognitionRef.current.stop();
             }
         };
-    }, [agentStatus, startConversation, addTranscript]);
+    }, [agentStatus, startConversation, addTranscript, user, WAKE_WORDS]);
 
     // Initial message effect
     useEffect(() => {
-        addTranscript('system', 'Say "Hey Agent", "Hey Ridat", or "Friday" to activate the assistant.');
+        if (user) {
+            addTranscript('system', `Say "Hey ${user.agentName}" or just "${user.agentName}" to activate the assistant.`);
+        }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    // Cleanup alarms on unmount
-    useEffect(() => {
-        return () => alarms.forEach(alarm => clearTimeout(alarm.timeoutId));
-    }, [alarms]);
+    }, [user]);
 
     // Comprehensive cleanup for all resources on unmount
     useEffect(() => {
@@ -501,5 +476,5 @@ export const useAgent = ({ apiKey, onApiKeyError }: { apiKey: string, onApiKeyEr
         };
     }, []);
     
-    return { agentStatus, transcriptHistory, events, alarms, startConversation, stopConversation };
+    return { agentStatus, transcriptHistory, events, alarms, startConversation, stopConversation, deleteAlarm, updateAlarm, deleteEvent, updateEvent };
 };

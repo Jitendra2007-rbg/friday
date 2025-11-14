@@ -1,5 +1,5 @@
 import React from 'react';
-import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry } from '../types';
+import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
 import AgentAvatar from '../components/AgentAvatar';
 import { CalendarIcon, AlarmIcon } from '../components/Icons';
 
@@ -13,9 +13,11 @@ interface AgentInterfaceProps {
     stopConversation: () => void;
   };
   navigate: (page: string) => void;
+  user: User;
+  logout: () => void;
 }
 
-const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate }) => {
+const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user, logout }) => {
   const {
     agentStatus,
     transcriptHistory,
@@ -39,7 +41,17 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate }) => {
 
   return (
     <div className="flex flex-col items-center justify-center p-4 font-sans min-h-screen">
-      <div className="w-full max-w-4xl flex flex-col md:flex-row gap-8">
+       <div className="absolute top-4 right-4 flex items-center gap-4 text-sm">
+        <div className="text-right">
+            <p className="text-gray-300">{user.email}</p>
+            <p className="text-gray-500">Agent: {user.agentName}</p>
+        </div>
+        <button onClick={logout} className="bg-gray-700 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-full transition-colors">
+            Logout
+        </button>
+      </div>
+
+      <div className="w-full max-w-4xl flex flex-col md:flex-row gap-8 mt-16 md:mt-0">
         
         {/* Left Panel - Agent & Status */}
         <div className="flex flex-col items-center justify-center md:w-1/3">

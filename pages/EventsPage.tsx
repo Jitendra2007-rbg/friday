@@ -1,13 +1,44 @@
-import React from 'react';
+
+import React, { useState } from 'react';
 import { CalendarEvent } from '../types';
-import { CalendarIcon, BackIcon } from '../components/Icons';
+import { CalendarIcon, BackIcon, EditIcon, TrashIcon } from '../components/Icons';
 
 interface EventsPageProps {
   events: CalendarEvent[];
   navigate: (page: string) => void;
+  deleteEvent: (id: string) => Promise<void>;
+  updateEvent: (id: string, updates: { title: string; dateTime: Date }) => Promise<void>;
 }
 
-const EventsPage: React.FC<EventsPageProps> = ({ events, navigate }) => {
+const EventsPage: React.FC<EventsPageProps> = ({ events, navigate, deleteEvent, updateEvent }) => {
+  const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
+  const [editFormData, setEditFormData] = useState({ title: '', dateTime: '' });
+
+  const handleEditClick = (event: CalendarEvent) => {
+    setEditingEvent(event);
+    const localDateTime = new Date(event.dateTime.getTime() - (event.dateTime.getTimezoneOffset() * 60000)).toISOString().slice(0, 16);
+    setEditFormData({ title: event.title, dateTime: localDateTime });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingEvent(null);
+  };
+
+  const handleSaveEdit = async () => {
+    if (editingEvent) {
+      await updateEvent(editingEvent.id, {
+        title: editFormData.title,
+        dateTime: new Date(editFormData.dateTime),
+      });
+      setEditingEvent(null);
+    }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setEditFormData(prev => ({ ...prev, [name]: value }));
+  };
+
   return (
     <div className="flex flex-col items-center justify-center p-4 font-sans min-h-screen">
       <div className="w-full max-w-2xl bg-gray-800/50 rounded-lg p-6">
@@ -28,9 +59,55 @@ const EventsPage: React.FC<EventsPageProps> = ({ events, navigate }) => {
         <div className="space-y-3">
           {events.length > 0 ? (
             events.map(event => (
-              <div key={event.id} className="bg-gray-700/50 p-4 rounded-lg">
-                <p className="font-semibold text-lg text-white">{event.title}</p>
-                <p className="text-gray-400">{event.dateTime.toLocaleString()}</p>
+              <div key={event.id} className="bg-gray-700/50 p-4 rounded-lg flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+                {editingEvent?.id === event.id ? (
+                    <div className="flex-grow w-full flex flex-col md:flex-row gap-2 items-center">
+                        <input
+                            type="text"
+                            name="title"
+                            value={editFormData.title}
+                            onChange={handleInputChange}
+                            className="bg-gray-800 border-2 border-gray-600 rounded-lg p-2 text-white w-full md:w-auto flex-grow focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <input
+                            type="datetime-local"
+                            name="dateTime"
+                            value={editFormData.dateTime}
+                            onChange={handleInputChange}
+                            className="bg-gray-800 border-2 border-gray-600 rounded-lg p-2 text-white w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                    </div>
+                ) : (
+                    <div className="flex-grow">
+                        <p className="font-semibold text-lg text-white">{event.title}</p>
+                        <p className="text-gray-400">{event.dateTime.toLocaleString()}</p>
+                    </div>
+                )}
+                <div className="flex gap-2 self-end md:self-center">
+                    {editingEvent?.id === event.id ? (
+                        <>
+                            <button onClick={handleSaveEdit} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-3 rounded-lg transition-colors">Save</button>
+                            <button onClick={handleCancelEdit} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-3 rounded-lg transition-colors">Cancel</button>
+                        </>
+                    ) : (
+                        <>
+                            <button
+                                onClick={() => handleEditClick(event)}
+                                className="bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-full transition-colors"
+                                aria-label={`Edit event for ${event.title}`}
+                            >
+                                <EditIcon className="w-5 h-5"/>
+                            </button>
+                            <button
+                                onClick={() => deleteEvent(event.id)}
+                                className="bg-red-600 hover:bg-red-700 text-white p-3 rounded-full transition-colors"
+                                aria-label={`Delete event for ${event.title}`}
+                            >
+                                <TrashIcon className="w-5 h-5"/>
+                            </button>
+                        </>
+                    )}
+                </div>
               </div>
             ))
           ) : (

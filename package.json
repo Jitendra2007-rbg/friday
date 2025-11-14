@@ -10,10 +10,12 @@
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
-  "@capacitor/browser": "^7.0.2",
-  "@capacitor/core": "^7.0.0",
+    "@supabase/supabase-js": "2.44.4",
     "react-dom": "^19.2.0",
-    "react": "^19.2.0"
+    "react": "^19.2.0",
+    "@capacitor/core": "^7.4.4",
+    "@capacitor/push-notifications": "^7.0.3",
+    "@capacitor/app-launcher": "^7.0.2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
