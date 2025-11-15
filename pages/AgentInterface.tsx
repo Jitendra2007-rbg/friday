@@ -1,4 +1,5 @@
 
+
 import React from 'react';
 import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
 import AgentAvatar from '../components/AgentAvatar';
@@ -31,6 +32,7 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user }
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [isMenuOpen, setIsMenuOpen] = React.useState(false);
+  const [viewingImage, setViewingImage] = React.useState<{src: string, alt: string} | null>(null);
 
   const isConversationActive = agentStatus !== AgentStatus.IDLE;
 
@@ -75,6 +77,30 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user }
 
   return (
     <div className="flex flex-col items-center justify-center p-4 font-sans h-full relative">
+      {/* Image Viewer Modal */}
+      {viewingImage && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={() => setViewingImage(null)}>
+            <div className="relative" onClick={(e) => e.stopPropagation()}>
+                <img src={viewingImage.src} alt={viewingImage.alt} className="max-w-[90vw] max-h-[80vh] rounded-lg shadow-2xl" />
+                <div className="absolute -bottom-14 left-1/2 -translate-x-1/2 flex gap-4">
+                     <a
+                        href={viewingImage.src}
+                        download={`${viewingImage.alt.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.png`}
+                        className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
+                    >
+                        Download
+                    </a>
+                    <button
+                        onClick={() => setViewingImage(null)}
+                        className="bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg transition-colors"
+                    >
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
+
       {/* Mobile Menu */}
       <div className="absolute top-4 left-4 z-20 md:hidden">
           <button onClick={() => setIsMenuOpen(true)} className="p-2 rounded-full hover:bg-gray-700/50 transition-colors">
@@ -104,12 +130,14 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user }
           <AgentAvatar status={agentStatus} />
           <p className="mt-4 text-lg capitalize" style={{color: 'var(--text-muted)'}}>{agentStatus}</p>
           {isConversationActive && agentStatus !== AgentStatus.ERROR &&
-            <button onClick={() => stopConversation()} className="mt-4 text-white font-bold py-2 px-4 rounded-full transition-colors" style={{backgroundColor: 'var(--danger-primary)', onMouseOver: "this.style.backgroundColor='var(--danger-primary-hover)'"}}>
+            // Fix: Replaced inline style with `onMouseOver` with Tailwind CSS classes for hover effect.
+            <button onClick={() => stopConversation()} className="mt-4 text-white font-bold py-2 px-4 rounded-full transition-colors bg-[var(--danger-primary)] hover:bg-[var(--danger-primary-hover)]">
               End Session
             </button>
           }
           {!isConversationActive &&
-            <button onClick={startConversation} className="mt-4 text-white font-bold py-2 px-4 rounded-full transition-colors" style={{backgroundColor: 'var(--accent-primary)', onMouseOver: "this.style.backgroundColor='var(--accent-primary-hover)'"}}>
+            // Fix: Replaced inline style with `onMouseOver` with Tailwind CSS classes for hover effect.
+            <button onClick={startConversation} className="mt-4 text-white font-bold py-2 px-4 rounded-full transition-colors bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)]">
              Start Manually
             </button>
           }
@@ -137,19 +165,19 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user }
                     }
                   }
 
-                  // Handle agent-generated images with a download link
+                  // Handle agent-generated images with modal viewer
                   if (entry.speaker === 'agent' && entry.text.trim().startsWith('<img')) {
                       const srcMatch = entry.text.match(/src="([^"]*)"/);
                       const altMatch = entry.text.match(/alt="([^"]*)"/);
-                      const prompt = altMatch ? altMatch[1].replace(/[^a-z0-9]/gi, '_').toLowerCase() : 'ai_generated_image';
-                      const filename = `${prompt}.png`;
-
-                      if (srcMatch) {
+                      const altText = altMatch?.[1] || 'Generated Image';
+                      const src = srcMatch?.[1];
+                      
+                      if (src) {
                           return (
                               <div key={entry.id} className="flex justify-start">
-                                  <a href={srcMatch[1]} download={filename} title="Click to download" className="agent-bubble p-2 rounded-lg block" style={{backgroundColor: 'var(--bg-interactive)'}}>
-                                      <img src={srcMatch[1]} alt={altMatch ? altMatch[1] : 'Generated Image'} className="max-w-xs rounded-lg" />
-                                  </a>
+                                  <button onClick={() => setViewingImage({ src, alt: altText })} className="agent-bubble p-2 rounded-lg block cursor-pointer" style={{backgroundColor: 'var(--bg-interactive)'}}>
+                                      <img src={src} alt={altText} className="max-w-xs rounded-lg" />
+                                  </button>
                               </div>
                           );
                       }

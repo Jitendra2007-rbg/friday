@@ -1,4 +1,5 @@
 
+
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, FunctionDeclaration, Type, LiveServerMessage, Modality, Blob } from '@google/genai';
 import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
@@ -383,7 +384,7 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                         contents: { parts: [{ text: prompt }] },
                         config: { responseModalities: [Modality.IMAGE] },
                     });
-                    const part = response.candidates?.[0]?.content?.parts?.[0];
+                    const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
                     if (part?.inlineData?.data) {
                         const base64Image = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
                         addTranscript('agent', `<img src="${base64Image}" alt="${prompt}" class="max-w-xs rounded-lg" />`);
@@ -423,7 +424,7 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                             contents: { parts: [{ text: `A professional product shot of ${name} on a clean white background.` }] },
                             config: { responseModalities: [Modality.IMAGE] },
                         });
-                        const part = imageResponse.candidates?.[0]?.content?.parts?.[0];
+                        const part = imageResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
                         const imageUrl = part?.inlineData?.data ? `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` : '';
                         
                         return { 
@@ -553,7 +554,7 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                             currentOutputTranscription.current += text;
                             setTranscriptHistory(prev => {
                                const last = prev[prev.length - 1];
-                                if (last && last.speaker === 'agent') {
+                                if (last && last.speaker === 'agent' && !last.text.trim().startsWith('<img')) {
                                    return [...prev.slice(0, -1), { ...last, text: currentOutputTranscription.current }];
                                 }
                                 return [...prev, { id: Date.now().toString(), speaker: 'agent', text: currentOutputTranscription.current }];
