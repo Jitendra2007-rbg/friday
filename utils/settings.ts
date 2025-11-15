@@ -3,7 +3,7 @@ import { UserSettings } from '../types';
 const SETTINGS_KEY = 'friday_user_settings';
 
 const defaultSettings: UserSettings = {
-  theme: 'theme-solar-flare',
+  theme: 'theme-cyberpunk-navy',
   voice: 'Zephyr',
   notifications: true,
 };

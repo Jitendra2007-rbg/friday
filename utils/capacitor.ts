@@ -1,20 +1,22 @@
 
 import { Capacitor } from '@capacitor/core';
-import { PushNotifications } from '@capacitor/push-notifications';
+// Fix: Import LocalNotifications for scheduling local notifications, as the methods are not on PushNotifications.
+import { LocalNotifications, PermissionStatus } from '@capacitor/local-notifications';
 import { AppLauncher } from '@capacitor/app-launcher';
 
 export const isNativePlatform = () => Capacitor.isNativePlatform();
 
 export const requestNotificationPermission = async () => {
   if (isNativePlatform()) {
-    let permStatus = await PushNotifications.checkPermissions();
-    if (permStatus.receive === 'prompt') {
-      permStatus = await PushNotifications.requestPermissions();
+    // Fix: Use LocalNotifications for permission requests related to local notifications.
+    let permStatus: PermissionStatus = await LocalNotifications.checkPermissions();
+    if (permStatus.display === 'prompt') {
+      permStatus = await LocalNotifications.requestPermissions();
     }
-    if (permStatus.receive !== 'granted') {
-      console.warn('User denied permissions for push notifications!');
+    if (permStatus.display !== 'granted') {
+      console.warn('User denied permissions for local notifications!');
     } else {
-        console.log('Push notification permissions granted.');
+        console.log('Local notification permissions granted.');
     }
   } else {
     if ('Notification' in window && Notification.permission === 'default') {
@@ -32,7 +34,8 @@ export const scheduleNativeNotification = async (notification: { id: number, tit
   }
 
   try {
-    await PushNotifications.schedule({
+    // Fix: Property 'schedule' does not exist on type 'PushNotificationsPlugin'. Use 'LocalNotifications.schedule' instead.
+    await LocalNotifications.schedule({
       notifications: [
         {
           title: notification.title,
@@ -53,10 +56,13 @@ export const cancelNativeNotifications = async (ids: number[]) => {
   if (!isNativePlatform()) return;
   
   try {
-    const pending = await PushNotifications.getPending();
+    // Fix: Property 'getPending' does not exist on type 'PushNotificationsPlugin'. Use 'LocalNotifications.getPending' instead.
+    const pending = await LocalNotifications.getPending();
     const notificationsToCancel = pending.notifications.filter(notif => ids.includes(notif.id));
     if (notificationsToCancel.length > 0) {
-      await PushNotifications.cancel({ notifications: notificationsToCancel });
+      // Fix: Property 'cancel' does not exist on type 'PushNotificationsPlugin'. Use 'LocalNotifications.cancel' instead.
+      // The `cancel` method requires the notification `id` to be a number, not a string.
+      await LocalNotifications.cancel({ notifications: notificationsToCancel.map(n => ({ id: n.id })) });
     }
   } catch (e) {
     console.error("Error cancelling native notifications", e);

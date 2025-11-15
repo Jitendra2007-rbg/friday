@@ -9,7 +9,6 @@ const SignupPage: React.FC<SignupPageProps> = ({ onSwitchToLogin }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [agentName, setAgentName] = useState('');
-  const [apiKey, setApiKey] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -18,10 +17,6 @@ const SignupPage: React.FC<SignupPageProps> = ({ onSwitchToLogin }) => {
     e.preventDefault();
     if (password.length < 6) {
         setError("Password must be at least 6 characters long.");
-        return;
-    }
-    if (!apiKey.trim()) {
-        setError("Gemini API Key is required.");
         return;
     }
     setLoading(true);
@@ -33,7 +28,6 @@ const SignupPage: React.FC<SignupPageProps> = ({ onSwitchToLogin }) => {
       options: {
         data: {
           agent_name: agentName || 'Friday',
-          api_key: apiKey,
         }
       }
     });
@@ -84,14 +78,6 @@ const SignupPage: React.FC<SignupPageProps> = ({ onSwitchToLogin }) => {
             value={agentName}
             onChange={(e) => setAgentName(e.target.value)}
             placeholder="Agent Name (e.g., Jarvis, Siri)"
-            className="bg-gray-700 border-2 border-gray-600 rounded-lg p-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-            required
-          />
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="Gemini API Key"
             className="bg-gray-700 border-2 border-gray-600 rounded-lg p-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             required
           />

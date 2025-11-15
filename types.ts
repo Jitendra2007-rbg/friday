@@ -13,7 +13,7 @@ export interface CalendarEvent {
 }
 
 export interface Alarm {
-  id: string;
+  id:string;
   label: string;
   time: Date;
 }
@@ -28,7 +28,6 @@ export interface User {
   id: string;
   email: string | undefined;
   agentName: string;
-  apiKey: string;
   profileData?: { [key: string]: any };
 }
 

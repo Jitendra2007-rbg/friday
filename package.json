@@ -15,7 +15,8 @@
     "react": "^19.2.0",
     "@capacitor/core": "^7.4.4",
     "@capacitor/push-notifications": "^7.0.3",
-    "@capacitor/app-launcher": "^7.0.2"
+    "@capacitor/app-launcher": "^7.0.2",
+    "@capacitor/local-notifications": "^7.0.3"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

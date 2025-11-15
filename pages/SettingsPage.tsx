@@ -51,10 +51,10 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) =
   };
 
   const playVoiceSample = async (voiceName: string) => {
-    if (!user?.apiKey || isPlaying) return;
+    if (!user || isPlaying) return;
     setIsPlaying(voiceName);
     try {
-        const ai = new GoogleGenAI({ apiKey: user.apiKey });
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash-preview-tts",
             contents: [{ parts: [{ text: 'Hello, this is my voice.' }] }],

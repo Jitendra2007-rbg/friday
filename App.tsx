@@ -1,5 +1,4 @@
 
-
 import React, { useState, useEffect, createContext, useContext } from 'react';
 import AgentInterface from './pages/AgentInterface';
 import EventsPage from './pages/EventsPage';
@@ -35,7 +34,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       // Core agent config is stored in the public users table.
       const { data: userData, error } = await supabase
         .from('users')
-        .select('agent_name, api_key') // Corrected: Removed non-existent 'profile_data' column
+        .select('agent_name')
         .eq('id', sessionUser.id)
         .maybeSingle();
 
@@ -49,21 +48,19 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
           id: sessionUser.id,
           email: sessionUser.email,
           agentName: userData.agent_name || 'Friday',
-          apiKey: userData.api_key,
-          profileData: profileData, // Corrected: Use profileData from user_metadata
+          profileData: profileData,
         };
       }
       
       // Fallback for new users whose profile might not have been created yet by a trigger
       // This uses the data provided during sign-up.
       const { user_metadata } = sessionUser;
-      if (user_metadata && user_metadata.api_key && user_metadata.agent_name) {
+      if (user_metadata && user_metadata.agent_name) {
         return {
           id: sessionUser.id,
           email: sessionUser.email,
           agentName: user_metadata.agent_name,
-          apiKey: user_metadata.api_key,
-          profileData: profileData, // Ensure profileData is included even on fallback
+          profileData: profileData,
         };
       }
       
@@ -77,7 +74,12 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       setSession(session);
       if (session?.user) {
         const userProfile = await fetchUserProfile(session.user);
-        setUser(userProfile);
+        if (userProfile) {
+            setUser(userProfile);
+        } else {
+            console.error("Failed to fetch user profile, logging out.");
+            await supabase.auth.signOut();
+        }
       }
       setLoading(false);
     };
@@ -88,7 +90,12 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       setSession(session);
       if (session?.user) {
          const userProfile = await fetchUserProfile(session.user);
-         setUser(userProfile);
+         if (userProfile) {
+            setUser(userProfile);
+         } else {
+            console.error("User profile invalid on auth state change, logging out.");
+            await supabase.auth.signOut();
+         }
       } else {
         setUser(null);
       }

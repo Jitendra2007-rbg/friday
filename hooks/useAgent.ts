@@ -1,62 +1,13 @@
-
-
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { GoogleGenAI, FunctionDeclaration, Type, LiveServerMessage, Modality, Blob } from '@google/genai';
+import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
 import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
 import { decode, encode, decodeAudioData, playAlarmSound } from '../utils/audio';
-import { supabase } from '../utils/supabase';
-import { isNativePlatform, scheduleNativeNotification, cancelNativeNotifications, launchAppByUrl } from '../utils/capacitor';
+import { isNativePlatform } from '../utils/capacitor';
 import { getSettings } from '../utils/settings';
-
-const functionDeclarations: FunctionDeclaration[] = [
-    {
-        name: 'openWebsite',
-        parameters: { type: Type.OBJECT, properties: { url: { type: Type.STRING } }, required: ['url'] },
-        description: "Opens a given URL in a new browser tab."
-    },
-    {
-        name: 'launchApp',
-        parameters: { type: Type.OBJECT, properties: { appName: { type: Type.STRING } }, required: ['appName'] },
-        description: "Launches a native mobile or desktop application. For example, 'launch Discord'."
-    },
-    {
-        name: 'scheduleEvent',
-        parameters: { type: Type.OBJECT, properties: { title: { type: Type.STRING }, date: { type: Type.STRING }, time: { type: Type.STRING } }, required: ['title', 'date', 'time'] },
-        description: "Schedules an event. Date should be in YYYY-MM-DD format, time in HH:MM 24-hour format."
-    },
-    {
-        name: 'setAlarm',
-        parameters: { type: Type.OBJECT, properties: { label: { type: Type.STRING }, time: { type: Type.STRING } }, required: ['label', 'time'] },
-        description: "Sets an alarm. Time should be in HH:MM 24-hour format."
-    },
-    {
-        name: 'saveUserDetails',
-        parameters: { type: Type.OBJECT, properties: { detailsToSave: { type: Type.OBJECT, description: "An object containing key-value pairs of user details to remember, such as name, interests, or mood." } }, required: ['detailsToSave'] },
-        description: "Saves important details about the user to personalize future conversations."
-    },
-    {
-        name: 'generateImage',
-        parameters: { type: Type.OBJECT, properties: { prompt: { type: Type.STRING } }, required: ['prompt'] },
-        description: "Generates an image based on a user's text prompt using the nano banana (gemini-2.5-flash-image) model."
-    },
-    {
-        name: 'searchProducts',
-        parameters: { type: Type.OBJECT, properties: { query: { type: Type.STRING } }, required: ['query'] },
-        description: "Searches for products online on stores like Nike, Amazon, or Flipkart. It provides a price overview and displays images."
-    }
-];
-
-// Generates a consistent 32-bit integer ID from a string for notifications.
-const simpleHash = (str: string): number => {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-        const char = str.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash |= 0; // Convert to 32bit integer
-    }
-    return Math.abs(hash);
-};
-
+import * as db from '../services/database';
+import * as notifications from '../services/notifications';
+import { functionDeclarations, createAgentFunctions } from '../services/agentFunctions';
+import { useWakeWord } from './useWakeWord';
 
 export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyError: () => void }) => {
     const [agentStatus, setAgentStatus] = useState<AgentStatus>(AgentStatus.IDLE);
@@ -70,11 +21,9 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
     const inputAudioContextRef = useRef<AudioContext | null>(null);
     const outputAudioContextRef = useRef<AudioContext | null>(null);
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
-    const wakeWordRecognitionRef = useRef<any>(null);
     const pendingImageRef = useRef<string | null>(null);
 
     const WAKE_WORDS = user ? [`hey ${user.agentName.toLowerCase()}`, user.agentName.toLowerCase()] : ['hey friday'];
-    const apiKey = user?.apiKey;
 
     const currentInputTranscription = useRef('');
     const currentOutputTranscription = useRef('');
@@ -98,87 +47,57 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
     }, [addTranscript]);
 
     const deleteAlarm = useCallback(async (id: string) => {
-        if (getSettings().notifications && isNativePlatform()) {
-            await cancelNativeNotifications([simpleHash(`alarm-${id}`)]);
-        }
-        const { error } = await supabase.from('alarms').delete().match({ id });
-        if (error) {
-            console.error('Error deleting alarm:', error);
-            addTranscript('system', `Failed to delete alarm.`);
-        } else {
+        await notifications.cancelAlarmNotification(id);
+        const success = await db.deleteAlarmById(id);
+        if (success) {
             setAlarms(prev => prev.filter(a => a.id !== id));
+        } else {
+            addTranscript('system', `Failed to delete alarm.`);
         }
     }, [addTranscript]);
     
     const updateAlarm = useCallback(async (id: string, updates: { label: string, time: Date }) => {
-        const notificationId = simpleHash(`alarm-${id}`);
-        if (getSettings().notifications && isNativePlatform()) {
-            await cancelNativeNotifications([notificationId]);
-        }
-        const { data, error } = await supabase.from('alarms').update({ label: updates.label, time: updates.time.toISOString() }).match({ id }).select();
-        if (error) {
-            console.error('Error updating alarm:', error);
+        await notifications.cancelAlarmNotification(id);
+        const updatedAlarm = await db.updateAlarmById(id, updates);
+        if (updatedAlarm) {
+            setAlarms(prev => prev.map(a => a.id === id ? updatedAlarm : a).sort((a,b) => a.time.getTime() - b.time.getTime()));
+            await notifications.scheduleAlarmNotification(updatedAlarm);
+        } else {
             addTranscript('system', `Failed to update alarm.`);
-        } else if (data) {
-            setAlarms(prev => prev.map(a => a.id === id ? { ...data[0], id: data[0].id.toString(), time: new Date(data[0].time) } : a).sort((a,b) => a.time.getTime() - b.time.getTime()));
-            if (getSettings().notifications && isNativePlatform()) {
-                await scheduleNativeNotification({ id: notificationId, title: 'Alarm', body: updates.label, scheduleAt: updates.time });
-            }
         }
     }, [addTranscript]);
 
     const deleteEvent = useCallback(async (id: string) => {
-         if (getSettings().notifications && isNativePlatform()) {
-            await cancelNativeNotifications([simpleHash(`event-${id}`)]);
-        }
-        const { error } = await supabase.from('events').delete().match({ id });
-        if (error) {
-            console.error('Error deleting event:', error);
-            addTranscript('system', `Failed to delete event.`);
-        } else {
+         await notifications.cancelEventNotification(id);
+        const success = await db.deleteEventById(id);
+        if (success) {
             setEvents(prev => prev.filter(e => e.id !== id));
+        } else {
+            addTranscript('system', `Failed to delete event.`);
         }
     }, [addTranscript]);
 
     const updateEvent = useCallback(async (id: string, updates: { title: string, dateTime: Date }) => {
-        const notificationId = simpleHash(`event-${id}`);
-        if (getSettings().notifications && isNativePlatform()) {
-            await cancelNativeNotifications([notificationId]);
-        }
-        const { data, error } = await supabase.from('events').update({ title: updates.title, dateTime: updates.dateTime.toISOString() }).match({ id }).select();
-        if (error) {
-            console.error('Error updating event:', error);
+        await notifications.cancelEventNotification(id);
+        const updatedEvent = await db.updateEventById(id, updates);
+        if (updatedEvent) {
+            setEvents(prev => prev.map(e => e.id === id ? updatedEvent : e).sort((a,b) => a.dateTime.getTime() - b.dateTime.getTime()));
+            await notifications.scheduleEventNotification(updatedEvent);
+        } else {
             addTranscript('system', `Failed to update event.`);
-        } else if (data) {
-            setEvents(prev => prev.map(e => e.id === id ? { ...data[0], dateTime: new Date(data[0].dateTime) } : e).sort((a,b) => a.dateTime.getTime() - b.dateTime.getTime()));
-            if (getSettings().notifications && isNativePlatform()) {
-                await scheduleNativeNotification({ id: notificationId, title: 'Event Reminder', body: updates.title, scheduleAt: updates.dateTime });
-            }
         }
     }, [addTranscript]);
 
     useEffect(() => {
         if (!user) return;
         const syncDataAndNotifications = async () => {
-            const { data: eventsData, error: eventsError } = await supabase.from('events').select('*').eq('user_id', user.id).order('dateTime', { ascending: true });
-            if (eventsError) console.error('Error fetching events:', eventsError);
-            else if (eventsData) {
-                const mappedEvents = eventsData.map(e => ({ ...e, dateTime: new Date(e.dateTime) }));
-                setEvents(mappedEvents);
-                if (getSettings().notifications && isNativePlatform()) {
-                    mappedEvents.forEach(event => scheduleNativeNotification({ id: simpleHash(`event-${event.id}`), title: 'Event Reminder', body: event.title, scheduleAt: event.dateTime }));
-                }
-            }
+            const userEvents = await db.getEventsForUser(user.id);
+            setEvents(userEvents);
+            notifications.scheduleAllEventNotifications(userEvents);
 
-            const { data: alarmsData, error: alarmsError } = await supabase.from('alarms').select('*').eq('user_id', user.id).order('time', { ascending: true });
-            if (alarmsError) console.error('Error fetching alarms:', alarmsError);
-            else if (alarmsData) {
-                const mappedAlarms = alarmsData.map(a => ({ ...a, id: a.id.toString(), time: new Date(a.time) }));
-                setAlarms(mappedAlarms);
-                 if (getSettings().notifications && isNativePlatform()) {
-                    mappedAlarms.forEach(alarm => scheduleNativeNotification({ id: simpleHash(`alarm-${alarm.id}`), title: 'Alarm', body: alarm.label, scheduleAt: alarm.time }));
-                }
-            }
+            const userAlarms = await db.getAlarmsForUser(user.id);
+            setAlarms(userAlarms);
+            notifications.scheduleAllAlarmNotifications(userAlarms);
         };
         syncDataAndNotifications();
     }, [user]);
@@ -237,224 +156,20 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
     }, [addTranscript, agentStatus, user]);
 
     const startConversation = useCallback(async () => {
-        if (!user || !apiKey) {
-            addTranscript('system', 'API Key is not configured for this user. Conversation cannot start.');
+        if (!user) {
+            addTranscript('system', 'User not logged in. Conversation cannot start.');
             setAgentStatus(AgentStatus.ERROR);
             return;
         }
+        stopWakeWordListening(); // Stop listening for wake word
         setAgentStatus(AgentStatus.LISTENING);
-        if (wakeWordRecognitionRef.current) {
-            wakeWordRecognitionRef.current.stop();
-        }
         setTranscriptHistory([]);
         addTranscript('system', 'Listening...');
         
-        const ai = new GoogleGenAI({ apiKey });
-
-        const agentFunctions = {
-            openWebsite: (url: string) => {
-                if (!url || typeof url !== 'string') {
-                    return "I can't open a website without a valid URL.";
-                }
-                let fullUrl = url;
-                if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
-                    fullUrl = `https://${fullUrl}`;
-                }
-                
-                addTranscript('system', `Attempting to open: ${fullUrl}`);
-                const newWindow = window.open(fullUrl, '_blank');
-
-                if (newWindow) {
-                    return `Opening ${url} now.`;
-                } else {
-                    return `I couldn't open ${url} directly, as it was likely blocked by a pop-up blocker. I have provided the link in the chat for you to click: ${fullUrl}`;
-                }
-            },
-            launchApp: async (appName: string) => {
-                addTranscript('system', `User wants to launch app: ${appName}.`);
-                if (!isNativePlatform()) {
-                    return `As a web-based assistant, I am running in a browser and cannot launch native desktop or mobile applications. I can open any website for you if you provide the URL.`;
-                }
-                const result = await launchAppByUrl(appName);
-                if (result.success) {
-                    return result.message;
-                } else {
-                    if (result.fallbackUrl) {
-                        addTranscript('system', `App not found, opening website: ${result.fallbackUrl}`);
-                        const openWebsiteResult = agentFunctions.openWebsite(result.fallbackUrl);
-                        return `${result.message} Opening its website instead. ${openWebsiteResult}`;
-                    }
-                    return result.message;
-                }
-            },
-            scheduleEvent: async (title: string, date: string, time: string) => {
-                try {
-                    if (!user || !user.id) return "I can't schedule an event without a logged-in user.";
-                    const dateTime = new Date(`${date}T${time}`);
-                    if (isNaN(dateTime.getTime())) throw new Error("Invalid date or time format.");
-                    
-                    const { data, error } = await supabase
-                        .from('events')
-                        .insert({ title, dateTime: dateTime.toISOString(), user_id: user.id })
-                        .select()
-                        .single();
-            
-                    if (error) throw error;
-                    
-                    if (data) {
-                        const newEvent = { ...data, dateTime: new Date(data.dateTime) };
-                        setEvents(prev => [...prev, newEvent].sort((a, b) => a.dateTime.getTime() - b.dateTime.getTime()));
-                        if (getSettings().notifications && isNativePlatform()) {
-                           await scheduleNativeNotification({ id: simpleHash(`event-${newEvent.id}`), title: 'Event Reminder', body: newEvent.title, scheduleAt: newEvent.dateTime });
-                        }
-                        addTranscript('system', `Event Scheduled: "${title}" on ${dateTime.toLocaleString()}`);
-                        return `Event "${title}" scheduled for ${dateTime.toLocaleString()}.`;
-                    }
-                    return "Failed to save the event. The database did not confirm the action.";
-                } catch (error) { 
-                    console.error("Error in scheduleEvent:", error);
-                    return "I had a problem scheduling that event. Please check the details or try again."; 
-                }
-            },
-            setAlarm: async (label: string, time: string) => {
-                try {
-                    if (!user || !user.id) return "I can't set an alarm without a logged-in user.";
-                    const now = new Date();
-                    const [hours, minutes] = time.split(':').map(Number);
-                    if (isNaN(hours) || isNaN(minutes)) throw new Error("Invalid time format.");
-            
-                    const alarmTime = new Date();
-                    alarmTime.setHours(hours, minutes, 0, 0);
-                    if (alarmTime <= now) alarmTime.setDate(alarmTime.getDate() + 1);
-            
-                    const { data, error } = await supabase
-                        .from('alarms')
-                        .insert({ label, time: alarmTime.toISOString(), user_id: user.id })
-                        .select()
-                        .single();
-            
-                    if (error) throw error;
-            
-                    if (data) {
-                        const newAlarm = { ...data, id: data.id.toString(), time: new Date(data.time) };
-                        setAlarms(prev => [...prev, newAlarm].sort((a, b) => a.time.getTime() - b.time.getTime()));
-                         if (getSettings().notifications && isNativePlatform()) {
-                           await scheduleNativeNotification({ id: simpleHash(`alarm-${newAlarm.id}`), title: 'Alarm', body: newAlarm.label, scheduleAt: newAlarm.time });
-                        }
-                        addTranscript('system', `Alarm Set: "${label}" for ${alarmTime.toLocaleTimeString()}`);
-                        return `Alarm "${label}" set for ${alarmTime.toLocaleTimeString()}.`;
-                    }
-                    return "Failed to save the alarm. The database did not confirm the action.";
-                } catch (error) { 
-                    console.error("Error in setAlarm:", error);
-                    return "I had a problem setting that alarm. Please check the time or try again."; 
-                }
-            },
-            saveUserDetails: async (detailsToSave: { [key: string]: any }) => {
-                const currentUser = userRef.current;
-                if (!currentUser) return "I can't save details because I don't know who the user is.";
-                try {
-                    const currentProfile = currentUser.profileData || {};
-                    const newProfileData = { ...currentProfile, ...detailsToSave };
-                    
-                    const { data, error } = await supabase.auth.updateUser({
-                        data: { profileData: newProfileData }
-                    });
-
-                    if (error) throw error;
-                    
-                    if (userRef.current && data.user) {
-                        userRef.current = { 
-                            ...userRef.current, 
-                            profileData: data.user.user_metadata.profileData 
-                        };
-                    }
-                    addTranscript('system', `Saved user details: ${JSON.stringify(detailsToSave)}`);
-                    return "Got it. I'll remember that.";
-                } catch (error) {
-                    console.error("Error saving user details:", error);
-                    return "I had a problem saving those details.";
-                }
-            },
-            generateImage: async (prompt: string): Promise<string> => {
-                try {
-                    addTranscript('system', `Generating image for prompt: "${prompt}"`);
-                    const response = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash-image',
-                        contents: { parts: [{ text: prompt }] },
-                        config: { responseModalities: [Modality.IMAGE] },
-                    });
-                    const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
-                    if (part?.inlineData?.data) {
-                        const base64Image = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                        addTranscript('agent', `<img src="${base64Image}" alt="${prompt}" class="max-w-xs rounded-lg" />`);
-                        return "Here is the image I created for you.";
-                    } else {
-                        return "I couldn't generate an image for that prompt. Please try a different one.";
-                    }
-                } catch (error) {
-                    console.error("Error generating image:", error);
-                    return "I ran into an error while trying to generate the image.";
-                }
-            },
-            searchProducts: async (query: string): Promise<string> => {
-                try {
-                    addTranscript('system', `Searching the web for: "${query}"`);
-            
-                    const groundedSearchPrompt = `Find a few of the latest and most popular products for the search query "${query}". Describe them for the user in a short summary. Then, on new lines, provide a list of up to 3 of the most relevant product names, each on its own line and prefixed with "PRODUCT:". For example:\n\nHere are some of the latest Nike shoes I found...\nPRODUCT: Nike Air Max 270\nPRODUCT: Nike Pegasus 41`;
-            
-                    const groundedResponse = await ai.models.generateContent({
-                        model: 'gemini-2.5-pro',
-                        contents: groundedSearchPrompt,
-                        config: { tools: [{ googleSearch: {} }] }
-                    });
-            
-                    const responseText = groundedResponse.text;
-                    const summary = responseText.split('PRODUCT:')[0].trim();
-                    const productNames = responseText.match(/PRODUCT:(.*)/g)?.map(p => p.replace('PRODUCT:', '').trim()) || [];
-            
-                    if (productNames.length === 0) {
-                        addTranscript('agent', summary || `I searched for "${query}" but couldn't find specific products to display. Here's what I found:`);
-                        return summary || `I couldn't find specific product details for "${query}".`;
-                    }
-            
-                    const productResults = await Promise.all(productNames.map(async (name: string) => {
-                        const imageResponse = await ai.models.generateContent({
-                            model: 'gemini-2.5-flash-image',
-                            contents: { parts: [{ text: `A professional product shot of ${name} on a clean white background.` }] },
-                            config: { responseModalities: [Modality.IMAGE] },
-                        });
-                        const part = imageResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
-                        const imageUrl = part?.inlineData?.data ? `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` : '';
-                        
-                        return { 
-                            name, 
-                            imageUrl,
-                            price: 'See Retailer',
-                            store: 'Online' 
-                        };
-                    }));
-                    
-                    const resultString = `[PRODUCT_RESULTS]${JSON.stringify(productResults)}`;
-                    addTranscript('agent', resultString);
-            
-                    const groundingChunks = groundedResponse.candidates?.[0]?.groundingMetadata?.groundingChunks;
-                    if (groundingChunks && groundingChunks.length > 0) {
-                        const sourcesHtml = groundingChunks.map(chunk => 
-                            `<a href="${chunk.web.uri}" target="_blank" rel="noopener noreferrer" style="color: var(--accent-primary); text-decoration: underline; display: block; font-size: 0.8em;">Source: ${chunk.web.title || chunk.web.uri}</a>`
-                        ).join('');
-                        addTranscript('system', `<div class="text-left"><strong>Sources:</strong> ${sourcesHtml}</div>`);
-                    }
-            
-                    return summary || `I found a few options for "${query}". I'm displaying them for you now.`;
-                } catch (error) {
-                    console.error("Error in searchProducts:", error);
-                    const errorMessage = `I had some trouble searching for "${query}". The web search may have failed. Please try again.`;
-                    addTranscript('agent', errorMessage);
-                    return errorMessage;
-                }
-            },
-        };
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const agentFunctions = createAgentFunctions(ai, user, addTranscript, (updatedUser) => {
+            if (userRef.current) userRef.current = updatedUser;
+        });
 
         try {
             mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -464,7 +179,6 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                 await outputAudioContextRef.current.resume();
             }
             nextStartTime.current = 0;
-
             
             const settings = getSettings();
             
@@ -569,30 +283,42 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                        if (message.toolCall) {
                             setAgentStatus(AgentStatus.THINKING);
                             for (const fc of message.toolCall.functionCalls) {
-                                let result: string;
+                                let result: string | undefined;
                                 try {
-                                    const args = fc.args as Record<string, unknown>;
+                                    const args = fc.args as Record<string, any>;
                                     switch (fc.name) {
                                         case 'openWebsite':
-                                            result = typeof args.url === 'string' ? agentFunctions.openWebsite(args.url) : "Missing URL.";
+                                            result = agentFunctions.openWebsite(args.url);
                                             break;
                                         case 'launchApp':
-                                            result = typeof args.appName === 'string' ? await agentFunctions.launchApp(args.appName) : "Missing App Name.";
+                                            result = await agentFunctions.launchApp(args.appName);
                                             break;
-                                        case 'scheduleEvent':
-                                            result = (typeof args.title === 'string' && typeof args.date === 'string' && typeof args.time === 'string') ? await agentFunctions.scheduleEvent(args.title, args.date, args.time) : "Missing event details.";
+                                        case 'scheduleEvent': {
+                                            const res = await agentFunctions.scheduleEvent(args.title, args.date, args.time);
+                                            if (res.event) {
+                                                setEvents(prev => [...prev, res.event].sort((a, b) => a.dateTime.getTime() - b.dateTime.getTime()));
+                                                await notifications.scheduleEventNotification(res.event);
+                                            }
+                                            result = res.message;
                                             break;
-                                        case 'setAlarm':
-                                            result = (typeof args.label === 'string' && typeof args.time === 'string') ? await agentFunctions.setAlarm(args.label, args.time) : "Missing alarm details.";
+                                        }
+                                        case 'setAlarm': {
+                                            const res = await agentFunctions.setAlarm(args.label, args.time);
+                                            if (res.alarm) {
+                                                setAlarms(prev => [...prev, res.alarm].sort((a, b) => a.time.getTime() - b.time.getTime()));
+                                                await notifications.scheduleAlarmNotification(res.alarm);
+                                            }
+                                            result = res.message;
                                             break;
+                                        }
                                         case 'saveUserDetails':
-                                            result = typeof args.detailsToSave === 'object' && args.detailsToSave !== null ? await agentFunctions.saveUserDetails(args.detailsToSave) : "Missing user details object.";
+                                            result = await agentFunctions.saveUserDetails(args.detailsToSave);
                                             break;
                                         case 'generateImage':
-                                            result = typeof args.prompt === 'string' ? await agentFunctions.generateImage(args.prompt) : "Missing image prompt.";
+                                            result = await agentFunctions.generateImage(args.prompt);
                                             break;
                                         case 'searchProducts':
-                                            result = typeof args.query === 'string' ? await agentFunctions.searchProducts(args.query) : "Missing product query.";
+                                            result = await agentFunctions.searchProducts(args.query);
                                             break;
                                         default:
                                             result = `Function "${fc.name}" not found.`;
@@ -641,67 +367,21 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
             addTranscript('system', 'Could not access microphone.');
             setAgentStatus(AgentStatus.ERROR);
         }
-    }, [addTranscript, stopConversation, apiKey, onApiKeyError, user]);
+    }, [addTranscript, stopConversation, onApiKeyError, user, setTranscriptHistory]);
     
-    useEffect(() => {
-        if (!user) return;
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            addTranscript('system', 'Voice recognition not supported in this browser.');
-            return;
-        }
+    const { startListening: startWakeWordListening, stopListening: stopWakeWordListening } = useWakeWord({
+        wakeWords: WAKE_WORDS,
+        onWakeWord: startConversation,
+        onError: (error) => addTranscript('system', error),
+    });
 
+    useEffect(() => {
         if (agentStatus === AgentStatus.IDLE) {
-            if (wakeWordRecognitionRef.current) wakeWordRecognitionRef.current.stop();
-            const recognition = new SpeechRecognition();
-            recognition.continuous = true;
-            recognition.interimResults = true;
-            recognition.onresult = (event: any) => {
-                for (let i = event.resultIndex; i < event.results.length; ++i) {
-                    if (event.results[i].isFinal) {
-                        const transcript = event.results[i][0].transcript.trim().toLowerCase();
-                        if (WAKE_WORDS.some(word => transcript.includes(word))) {
-                            startConversation();
-                        }
-                    }
-                }
-            };
-            recognition.onerror = (event: any) => {
-                let errorMessage = `Speech recognition error: ${event.error}.`;
-                switch (event.error) {
-                    case 'no-speech': return;
-                    case 'audio-capture': errorMessage = 'No microphone found. Ensure a microphone is installed and configured correctly.'; break;
-                    case 'not-allowed': errorMessage = 'Microphone access was denied. Please allow microphone access in your browser settings.'; break;
-                    case 'network': errorMessage = 'A network error occurred with the speech recognition service. Please check your internet connection.'; break;
-                    case 'aborted': return;
-                }
-                console.error('Wake word recognition error:', event);
-                addTranscript('system', errorMessage);
-            };
-            recognition.onend = () => {
-                if (agentStatus === AgentStatus.IDLE) {
-                    try { recognition.start(); } catch(e) { console.error("Could not restart recognition", e); }
-                }
-            };
-            wakeWordRecognitionRef.current = recognition;
-            try { recognition.start(); } catch (e) {
-                console.error("Wake word recognition failed to start:", e);
-                addTranscript('system', 'Wake word listener failed to start.');
-            }
+            startWakeWordListening();
         } else {
-            if (wakeWordRecognitionRef.current) {
-                wakeWordRecognitionRef.current.stop();
-                wakeWordRecognitionRef.current = null;
-            }
+            stopWakeWordListening();
         }
-        
-        return () => {
-            if (wakeWordRecognitionRef.current) {
-                wakeWordRecognitionRef.current.onend = null;
-                wakeWordRecognitionRef.current.stop();
-            }
-        };
-    }, [agentStatus, startConversation, addTranscript, user, WAKE_WORDS]);
+    }, [agentStatus, startWakeWordListening, stopWakeWordListening]);
 
     useEffect(() => {
         if (user) {
@@ -712,6 +392,7 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
 
     useEffect(() => {
         return () => {
+            // General cleanup
             mediaStreamRef.current?.getTracks().forEach(track => track.stop());
             if (scriptProcessorRef.current) {
                 scriptProcessorRef.current.disconnect();
@@ -724,13 +405,6 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                 outputAudioContextRef.current.close().catch(console.error);
             }
             sessionPromiseRef.current?.then(session => session.close()).catch(console.error);
-            
-            if (wakeWordRecognitionRef.current) {
-                wakeWordRecognitionRef.current.onend = null;
-                wakeWordRecognitionRef.current.onerror = null;
-                wakeWordRecognitionRef.current.onresult = null;
-                wakeWordRecognitionRef.current.stop();
-            }
         };
     }, []);
     
