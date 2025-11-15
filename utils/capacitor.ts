@@ -5,9 +5,6 @@ import { AppLauncher } from '@capacitor/app-launcher';
 
 export const isNativePlatform = () => Capacitor.isNativePlatform();
 
-/**
- * Manages notification permissions for both native and web platforms.
- */
 export const requestNotificationPermission = async () => {
   if (isNativePlatform()) {
     let permStatus = await PushNotifications.checkPermissions();
@@ -20,20 +17,15 @@ export const requestNotificationPermission = async () => {
         console.log('Push notification permissions granted.');
     }
   } else {
-    // Web notifications fallback
     if ('Notification' in window && Notification.permission === 'default') {
       await Notification.requestPermission();
     }
   }
 };
 
-/**
- * Schedules a single local notification using the native plugin. This is reliable even if the app is closed.
- */
 export const scheduleNativeNotification = async (notification: { id: number, title: string, body: string, scheduleAt: Date }) => {
   if (!isNativePlatform()) return;
 
-  // Do not schedule notifications for past events
   if (notification.scheduleAt.getTime() <= Date.now()) {
     console.log("Skipping schedule for a notification in the past:", notification.title);
     return;
@@ -48,7 +40,7 @@ export const scheduleNativeNotification = async (notification: { id: number, tit
           id: notification.id,
           schedule: { at: notification.scheduleAt },
           sound: 'default',
-          smallIcon: 'res://mipmap-hdpi/ic_launcher.png', // Ensure this icon exists in your android/app/src/main/res folders
+          smallIcon: 'res://mipmap-hdpi/ic_launcher.png',
         },
       ],
     });
@@ -57,9 +49,6 @@ export const scheduleNativeNotification = async (notification: { id: number, tit
   }
 };
 
-/**
- * Cancels pending local notifications by their IDs.
- */
 export const cancelNativeNotifications = async (ids: number[]) => {
   if (!isNativePlatform()) return;
   
@@ -74,46 +63,41 @@ export const cancelNativeNotifications = async (ids: number[]) => {
   }
 };
 
-
-/**
- * A map of common app names to their URL schemes.
- * This list can be expanded.
- */
-const appUrlSchemes: { [key: string]: string } = {
-    'discord': 'com.discord', // Android package name
-    'slack': 'slack://',
-    'twitter': 'twitter://',
-    'x': 'twitter://',
-    'youtube': 'youtube://',
-    'instagram': 'instagram://',
-    'facebook': 'fb://',
-    'whatsapp': 'whatsapp://',
-    'spotify': 'spotify://',
-    'calculator': 'com.google.android.calculator' // Example for Android package
+const appUrlSchemes: { [key: string]: { scheme: string; website: string } } = {
+    'discord': { scheme: 'discord://', website: 'https://discord.com' },
+    'slack': { scheme: 'slack://', website: 'https://slack.com' },
+    'twitter': { scheme: 'twitter://', website: 'https://twitter.com' },
+    'x': { scheme: 'twitter://', website: 'https://x.com' },
+    'youtube': { scheme: 'youtube://', website: 'https://youtube.com' },
+    'instagram': { scheme: 'instagram://', website: 'https://instagram.com' },
+    'facebook': { scheme: 'fb://', website: 'https://facebook.com' },
+    'whatsapp': { scheme: 'whatsapp://', website: 'https://whatsapp.com' },
+    'spotify': { scheme: 'spotify://', website: 'https://spotify.com' },
+    'calculator': { scheme: 'calculator://', website: 'https://www.google.com/search?q=calculator' }, // iOS scheme
 };
 
-/**
- * Attempts to launch a native application by its name.
- * @param appName The common name of the app (e.g., "Discord").
- * @returns A string indicating the result of the action.
- */
-export const launchAppByUrl = async (appName: string): Promise<string> => {
+export const launchAppByUrl = async (appName: string): Promise<{ success: boolean; message: string; fallbackUrl?: string }> => {
     const searchTerm = appName.toLowerCase().trim();
-    const url = appUrlSchemes[searchTerm];
+    const appConfig = appUrlSchemes[searchTerm];
 
-    if (!url) {
-        return `I don't know the URL scheme to open "${appName}". I can only open a few common apps.`;
+    if (!appConfig) {
+        return { success: false, message: `I don't know how to open "${appName}". I can try searching for it online.` };
     }
 
     try {
-        const { completed } = await AppLauncher.openUrl({ url });
-        if (completed) {
-            return `Opening ${appName}.`;
+        const canOpen = await AppLauncher.canOpenUrl({ url: appConfig.scheme });
+        if (canOpen.value) {
+            const { completed } = await AppLauncher.openUrl({ url: appConfig.scheme });
+            if (completed) {
+                return { success: true, message: `Opening ${appName}.` };
+            } else {
+                return { success: false, message: `I tried to open ${appName}, but it didn't work.`, fallbackUrl: appConfig.website };
+            }
         } else {
-            return `I tried to open ${appName}, but it didn't seem to work.`;
+            return { success: false, message: `It looks like ${appName} is not installed.`, fallbackUrl: appConfig.website };
         }
     } catch (error) {
-        console.error(`Error launching app ${appName} with URL ${url}:`, error);
-        return `I couldn't open "${appName}". Make sure it's installed on your device.`;
+        console.error(`Error launching app ${appName}:`, error);
+        return { success: false, message: `I ran into an error trying to open "${appName}".`, fallbackUrl: appConfig.website };
     }
 };

@@ -29,6 +29,13 @@ export interface User {
   email: string | undefined;
   agentName: string;
   apiKey: string;
+  profileData?: { [key: string]: any };
+}
+
+export interface UserSettings {
+  theme: string;
+  voice: string;
+  notifications: boolean;
 }
 
 // Add global types here to avoid polluting other files

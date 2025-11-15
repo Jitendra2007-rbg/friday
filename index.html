@@ -6,10 +6,67 @@
     <title>Gemini Voice Agent</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
+      :root {
+        --bg-primary: #111827;
+        --bg-secondary: rgba(31, 41, 55, 0.5);
+        --bg-tertiary: #1f2937;
+        --bg-interactive: #374151;
+        --text-primary: #f9fafb;
+        --text-secondary: #d1d5db;
+        --text-muted: #9ca3af;
+        --accent-primary: #3b82f6;
+        --accent-primary-hover: #2563eb;
+        --danger-primary: #ef4444;
+        --danger-primary-hover: #dc2626;
+      }
+      .theme-cyberpunk-navy {
+        --bg-primary: #111827;
+        --bg-secondary: rgba(31, 41, 55, 0.5);
+        --bg-tertiary: #1f2937;
+        --bg-interactive: #374151;
+        --text-primary: #f9fafb;
+        --text-secondary: #d1d5db;
+        --text-muted: #9ca3af;
+        --accent-primary: #3b82f6;
+        --accent-primary-hover: #2563eb;
+        --danger-primary: #ef4444;
+        --danger-primary-hover: #dc2626;
+      }
+      .theme-solar-flare {
+        --bg-primary: #2B1B17;
+        --bg-secondary: rgba(83, 25, 17, 0.6);
+        --bg-tertiary: #531911;
+        --bg-interactive: #8B4513;
+        --text-primary: #FFD700;
+        --text-secondary: #F4A460;
+        --text-muted: #CD853F;
+        --accent-primary: #FF4500;
+        --accent-primary-hover: #FF6347;
+        --danger-primary: #DC143C;
+        --danger-primary-hover: #B22222;
+      }
+      .theme-starlight {
+        --bg-primary: #000020;
+        --bg-secondary: rgba(26, 26, 46, 0.7);
+        --bg-tertiary: #16213e;
+        --bg-interactive: #0f3460;
+        --text-primary: #e0e0e0;
+        --text-secondary: #b0b0b0;
+        --text-muted: #8e8e8e;
+        --accent-primary: #e94560;
+        --accent-primary-hover: #c33149;
+        --danger-primary: #ff6363;
+        --danger-primary-hover: #ff2d2d;
+      }
       html, body {
         height: 100%;
         overflow: hidden;
         overscroll-behavior: contain;
+      }
+      body {
+        background-color: var(--bg-primary);
+        color: var(--text-primary);
+        transition: background-color 0.5s, color 0.5s;
       }
       #root {
         height: 100%;
@@ -31,7 +88,7 @@
 }
 </script>
 </head>
-  <body class="bg-gray-900 text-white">
+  <body>
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
   </body>

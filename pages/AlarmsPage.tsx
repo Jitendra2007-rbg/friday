@@ -16,7 +16,6 @@ const AlarmsPage: React.FC<AlarmsPageProps> = ({ alarms, navigate, deleteAlarm, 
 
   const handleEditClick = (alarm: Alarm) => {
     setEditingAlarm(alarm);
-    // Format for datetime-local input: YYYY-MM-DDTHH:mm
     const localTime = new Date(alarm.time.getTime() - (alarm.time.getTimezoneOffset() * 60000)).toISOString().slice(0, 16);
     setEditFormData({ label: alarm.label, time: localTime });
   };
@@ -42,15 +41,16 @@ const AlarmsPage: React.FC<AlarmsPageProps> = ({ alarms, navigate, deleteAlarm, 
 
   return (
     <div className="flex flex-col items-center justify-center p-4 font-sans h-full">
-      <div className="w-full max-w-2xl bg-gray-800/50 rounded-lg p-6">
+      <div className="w-full max-w-2xl rounded-lg p-6" style={{backgroundColor: 'var(--bg-secondary)'}}>
         <div className="flex items-center justify-between mb-4">
-            <h1 className="text-2xl font-bold flex items-center gap-2 text-gray-200">
+            <h1 className="text-2xl font-bold flex items-center gap-2" style={{color: 'var(--text-secondary)'}}>
               <AlarmIcon className="w-8 h-8"/>
               Your Alarms
             </h1>
             <button
               onClick={() => navigate('agent')}
-              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-full transition-colors"
+              className="flex items-center gap-2 text-white font-bold py-2 px-4 rounded-full transition-colors"
+              style={{backgroundColor: 'var(--accent-primary)'}}
               aria-label="Back to main interface"
             >
               <BackIcon className="w-5 h-5"/>
@@ -60,7 +60,7 @@ const AlarmsPage: React.FC<AlarmsPageProps> = ({ alarms, navigate, deleteAlarm, 
         <div className="space-y-3">
           {alarms.length > 0 ? (
             alarms.map(alarm => (
-              <div key={alarm.id} className="bg-gray-700/50 p-4 rounded-lg flex justify-between items-center transition-all duration-300">
+              <div key={alarm.id} className="p-4 rounded-lg flex justify-between items-center transition-all duration-300" style={{backgroundColor: 'var(--bg-tertiary)'}}>
                 {editingAlarm?.id === alarm.id ? (
                    <div className="flex-grow flex flex-col md:flex-row gap-2 items-center">
                         <input 
@@ -68,14 +68,14 @@ const AlarmsPage: React.FC<AlarmsPageProps> = ({ alarms, navigate, deleteAlarm, 
                             name="label"
                             value={editFormData.label}
                             onChange={handleInputChange}
-                            className="bg-gray-800 border-2 border-gray-600 rounded-lg p-2 text-white w-full md:w-auto flex-grow focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            className="bg-gray-800 border-2 border-gray-600 rounded-lg p-2 text-white w-full md:w-auto flex-grow focus:outline-none focus:ring-2"
                         />
                         <input
                             type="datetime-local"
                             name="time"
                             value={editFormData.time}
                             onChange={handleInputChange}
-                            className="bg-gray-800 border-2 border-gray-600 rounded-lg p-2 text-white w-full md:w-auto focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            className="bg-gray-800 border-2 border-gray-600 rounded-lg p-2 text-white w-full md:w-auto focus:outline-none focus:ring-2"
                         />
                         <div className="flex gap-2 self-end md:self-center">
                             <button onClick={handleSaveEdit} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-3 rounded-lg transition-colors">Save</button>
@@ -88,20 +88,22 @@ const AlarmsPage: React.FC<AlarmsPageProps> = ({ alarms, navigate, deleteAlarm, 
                       <p className="font-semibold text-lg text-white">{alarm.label}</p>
                       <p className="text-gray-400">Set for {alarm.time.toLocaleString()}</p>
                     </div>
-                    <div className="text-2xl font-mono bg-gray-900/50 p-2 rounded-md mx-4 hidden md:block">
+                    <div className="text-2xl font-mono p-2 rounded-md mx-4 hidden md:block" style={{backgroundColor: 'var(--bg-primary)'}}>
                       {alarm.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
                     <div className="flex gap-2">
                         <button
                             onClick={() => handleEditClick(alarm)}
-                            className="bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-full transition-colors"
+                            className="text-white p-3 rounded-full transition-colors"
+                            style={{backgroundColor: 'var(--accent-primary)'}}
                             aria-label={`Edit alarm for ${alarm.label}`}
                         >
                             <EditIcon className="w-5 h-5"/>
                         </button>
                         <button
                             onClick={() => deleteAlarm(alarm.id)}
-                            className="bg-red-600 hover:bg-red-700 text-white p-3 rounded-full transition-colors"
+                            className="text-white p-3 rounded-full transition-colors"
+                            style={{backgroundColor: 'var(--danger-primary)'}}
                             aria-label={`Delete alarm for ${alarm.label}`}
                         >
                             <TrashIcon className="w-5 h-5"/>
@@ -112,7 +114,7 @@ const AlarmsPage: React.FC<AlarmsPageProps> = ({ alarms, navigate, deleteAlarm, 
               </div>
             ))
           ) : (
-            <p className="text-center text-gray-400 py-8">You have no alarms set.</p>
+            <p className="text-center py-8" style={{color: 'var(--text-muted)'}}>You have no alarms set.</p>
           )}
         </div>
       </div>

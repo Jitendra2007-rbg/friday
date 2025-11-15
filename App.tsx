@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, createContext, useContext } from 'react';
 import AgentInterface from './pages/AgentInterface';
 import EventsPage from './pages/EventsPage';
@@ -7,9 +8,11 @@ import { useAgent } from './hooks/useAgent';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import { supabase } from './utils/supabase';
-import { Session } from '@supabase/supabase-js';
+import { Session, User as SupabaseUser } from '@supabase/supabase-js';
 import { User } from './types';
 import { requestNotificationPermission } from './utils/capacitor';
+import SettingsPage from './pages/SettingsPage';
+import './utils/settings'; // Applies theme on initial load
 
 interface AuthContextType {
   session: Session | null;
@@ -25,20 +28,56 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const fetchUserProfile = async (sessionUser: SupabaseUser): Promise<User | null> => {
+      // The user's dynamic profile (name, interests, etc.) is stored in user_metadata.
+      const profileData = sessionUser.user_metadata?.profileData || {};
+
+      // Core agent config is stored in the public users table.
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('agent_name, api_key') // Corrected: Removed non-existent 'profile_data' column
+        .eq('id', sessionUser.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("Error fetching user profile:", error.message);
+        return null;
+      }
+
+      if (userData) {
+        return {
+          id: sessionUser.id,
+          email: sessionUser.email,
+          agentName: userData.agent_name || 'Friday',
+          apiKey: userData.api_key,
+          profileData: profileData, // Corrected: Use profileData from user_metadata
+        };
+      }
+      
+      // Fallback for new users whose profile might not have been created yet by a trigger
+      // This uses the data provided during sign-up.
+      const { user_metadata } = sessionUser;
+      if (user_metadata && user_metadata.api_key && user_metadata.agent_name) {
+        return {
+          id: sessionUser.id,
+          email: sessionUser.email,
+          agentName: user_metadata.agent_name,
+          apiKey: user_metadata.api_key,
+          profileData: profileData, // Ensure profileData is included even on fallback
+        };
+      }
+      
+      console.warn("User has a session but profile data is unavailable.");
+      return null;
+    };
+
+
     const getSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       setSession(session);
       if (session?.user) {
-        const { data: userData, error } = await supabase
-          .from('users')
-          .select('agent_name, api_key')
-          .eq('id', session.user.id)
-          .single();
-        if (error) {
-          console.error("Error fetching user profile:", error);
-        } else if (userData) {
-          setUser({ id: session.user.id, email: session.user.email, agentName: userData.agent_name || 'Friday', apiKey: userData.api_key });
-        }
+        const userProfile = await fetchUserProfile(session.user);
+        setUser(userProfile);
       }
       setLoading(false);
     };
@@ -48,17 +87,8 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setSession(session);
       if (session?.user) {
-         const { data: userData, error } = await supabase
-          .from('users')
-          .select('agent_name, api_key')
-          .eq('id', session.user.id)
-          .single();
-        if (error) {
-          console.error("Error fetching user profile on auth change:", error);
-          setUser(null);
-        } else if (userData) {
-          setUser({ id: session.user.id, email: session.user.email, agentName: userData.agent_name || 'Friday', apiKey: userData.api_key });
-        }
+         const userProfile = await fetchUserProfile(session.user);
+         setUser(userProfile);
       } else {
         setUser(null);
       }
@@ -74,7 +104,14 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   };
 
   if (loading) {
-    return <div className="h-full bg-gray-900 text-white flex items-center justify-center">Loading...</div>;
+    return (
+      <div className="h-full flex items-center justify-center" style={{backgroundColor: 'var(--bg-primary)'}}>
+        <svg className="animate-spin h-10 w-10 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+      </div>
+    );
   }
 
   return (
@@ -118,14 +155,16 @@ const MainApp: React.FC = () => {
                   deleteAlarm={agentState.deleteAlarm}
                   updateAlarm={agentState.updateAlarm}
                 />;
+      case 'settings':
+        return <SettingsPage navigate={navigate} logout={logout} user={user} />;
       case 'agent':
       default:
-        return <AgentInterface agent={agentState} navigate={navigate} user={user} logout={logout}/>;
+        return <AgentInterface agent={agentState} navigate={navigate} user={user} />;
     }
   };
 
   return (
-    <div className="h-full bg-gray-900">
+    <div className="h-full" style={{backgroundColor: 'var(--bg-primary)'}}>
       {renderPage()}
     </div>
   );
@@ -144,13 +183,26 @@ const App: React.FC = () => {
 };
 
 const AuthManager: React.FC = () => {
-    const { session } = useAuth();
+    const { session, user } = useAuth();
     const [authRoute, setAuthRoute] = useState<'login' | 'signup'>('login');
 
     if (!session) {
         return authRoute === 'login' 
             ? <LoginPage onSwitchToSignup={() => setAuthRoute('signup')} /> 
             : <SignupPage onSwitchToLogin={() => setAuthRoute('login')} />;
+    }
+
+    if (session && !user) {
+      // We have a session but are waiting for the user profile to load.
+      // This prevents the blank screen in MainApp by showing a spinner.
+      return (
+          <div className="h-full flex items-center justify-center" style={{backgroundColor: 'var(--bg-primary)'}}>
+              <svg className="animate-spin h-10 w-10 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+          </div>
+      );
     }
 
     return <MainApp />;
