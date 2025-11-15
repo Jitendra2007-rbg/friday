@@ -1,10 +1,13 @@
 
+
+
 import React, { useState, useEffect } from 'react';
 import { GoogleGenAI, Modality } from '@google/genai';
 import { BackIcon, CogIcon, PaintBrushIcon, BellIcon, SpeakerWaveIcon, CheckIcon } from '../components/Icons';
 import { getSettings, saveSettings } from '../utils/settings';
 import { User } from '../types';
 import { decode, decodeAudioData } from '../utils/audio';
+import { getApiKey } from '../utils/apiKeyManager';
 
 interface SettingsPageProps {
   navigate: (page: string) => void;
@@ -53,9 +56,17 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user, res
 
   const playVoiceSample = async (voiceName: string) => {
     if (!user || isPlaying) return;
+    
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      alert("Cannot play voice sample, API key is missing. Please set it first.");
+      resetApiKey();
+      return;
+    }
+
     setIsPlaying(voiceName);
     try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const ai = new GoogleGenAI({ apiKey });
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash-preview-tts",
             contents: [{ parts: [{ text: 'Hello, this is my voice.' }] }],
@@ -87,7 +98,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user, res
     } catch (error: any) {
         console.error("Failed to play voice sample:", error);
         const errorMessage = error.message || '';
-        if (errorMessage.includes('Requested entity was not found') || errorMessage.includes('API key not valid')) {
+        if (errorMessage.includes('API key not valid')) {
+            alert("Your API key is invalid. Please enter a valid one.");
             resetApiKey();
         }
         setIsPlaying(null);
@@ -154,9 +166,20 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user, res
                     </button>
                 </div>
             </div>
+            
+            {/* API Key Management */}
+            <div>
+                <h2 className="text-lg font-semibold flex items-center gap-2 mb-2" style={{color: 'var(--text-secondary)'}}><svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg> API Key</h2>
+                <div className="flex items-center justify-between p-3 rounded-lg" style={{backgroundColor: `var(--bg-tertiary)`}}>
+                    <span>Manage your Gemini API Key</span>
+                     <button onClick={resetApiKey} className="font-semibold py-2 px-4 rounded-lg transition-colors text-white" style={{backgroundColor: 'var(--bg-interactive)'}}>
+                        Change API Key
+                    </button>
+                </div>
+            </div>
 
             {/* Action Buttons */}
-            <div className="flex flex-col md:flex-row items-center gap-4 pt-4">
+            <div className="flex flex-col md:flex-row items-center gap-4 pt-4 border-t border-gray-700/50">
                  <button onClick={handleSave} className="w-full md:w-auto flex-grow flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg transition-all duration-200 disabled:opacity-75" disabled={isSaving}>
                     {isSaving ? 'Saved!' : 'Save Changes'}
                     {isSaving && <CheckIcon className="w-5 h-5" />}

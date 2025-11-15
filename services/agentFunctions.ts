@@ -1,5 +1,6 @@
 
-import { GoogleGenAI, FunctionDeclaration, Type } from '@google/genai';
+
+import { GoogleGenAI, FunctionDeclaration, Type, Modality } from '@google/genai';
 import { User, CalendarEvent, Alarm } from '../types';
 import { isNativePlatform, launchAppByUrl } from '../utils/capacitor';
 import * as db from './database';
@@ -35,7 +36,7 @@ export const functionDeclarations: FunctionDeclaration[] = [
     {
         name: 'generateImage',
         parameters: { type: Type.OBJECT, properties: { prompt: { type: Type.STRING } }, required: ['prompt'] },
-        description: "Generates a high-quality image based on a user's text prompt using the Imagen model."
+        description: "Generates an image based on a user's text prompt."
     },
     {
         name: 'searchProducts',
@@ -148,33 +149,47 @@ export const createAgentFunctions = (
     const generateImage = async (prompt: string): Promise<string> => {
         try {
             addTranscript('system', `Generating image for prompt: "${prompt}"`);
-            const response = await ai.models.generateImages({
-                model: 'imagen-4.0-generate-001',
-                prompt: prompt,
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash-image',
+                contents: { parts: [{ text: prompt }] },
                 config: {
-                    numberOfImages: 1,
-                    outputMimeType: 'image/png',
-                    aspectRatio: '1:1',
+                    responseModalities: [Modality.IMAGE],
                 },
             });
-
-            if (response.generatedImages && response.generatedImages.length > 0 && response.generatedImages[0].image.imageBytes) {
-                const base64ImageBytes = response.generatedImages[0].image.imageBytes;
-                const imageUrl = `data:image/png;base64,${base64ImageBytes}`;
+    
+            const imagePart = response.candidates?.[0]?.content?.parts?.find(part => part.inlineData);
+    
+            if (imagePart && imagePart.inlineData) {
+                const { data, mimeType } = imagePart.inlineData;
+                const imageUrl = `data:${mimeType};base64,${data}`;
                 addTranscript('agent', `<img src="${imageUrl}" alt="${prompt}" class="max-w-xs rounded-lg" />`);
                 return "Here is the image I created for you.";
             } else {
-                console.warn("Imagen response did not contain an image:", response);
+                console.warn("Gemini Flash Image response did not contain an image:", response);
                 return "I couldn't generate an image for that prompt. Please try a different one.";
             }
         } catch (error: any) {
             console.error("Error generating image:", error);
-            const errorMessage = error.message || '';
-            if (errorMessage.includes('Requested entity was not found') || errorMessage.includes('API key not valid')) {
-                onApiKeyError();
-                return "There's an issue with the API key. I can't generate an image right now.";
+            const errorMessage = String(error.message || '');
+            
+            if (errorMessage.includes('quota') || errorMessage.includes('RESOURCE_EXHAUSTED')) {
+                const quotaErrorMessage = `I couldn't generate the image because the free daily limit has been reached. Please try again tomorrow or check your plan details. For more information, see the <a href="https://ai.google.dev/gemini-api/docs/rate-limits" target="_blank" rel="noopener noreferrer" style="color: var(--accent-primary);">API Rate Limits documentation</a>.`;
+                addTranscript('system', quotaErrorMessage);
+                return "The free request limit for image generation has been reached for today. I've added a link with more details to our chat.";
             }
-            return "I ran into an error while trying to generate the image.";
+            if (errorMessage.includes('API key not valid')) {
+                onApiKeyError();
+                return "There's an issue with your API key. Please provide a valid one.";
+            }
+            if (errorMessage.toLowerCase().includes('failed to fetch')) {
+                return "I couldn't connect to the image generation service. Please check your internet connection.";
+            }
+            if (errorMessage.includes('billing')) {
+                const billingErrorMessage = `Image generation failed. This feature may require a Google Cloud project with billing enabled. For instructions, please visit: <a href="https://cloud.google.com/billing/docs/how-to/enable-billing" target="_blank" rel="noopener noreferrer" style="color: var(--accent-primary);">Enable Billing on Your Project</a>`;
+                addTranscript('system', billingErrorMessage);
+                return "I couldn't generate the image. This feature might require billing to be enabled. I've added a link with more information to our chat.";
+            }
+            return `I ran into an error while trying to generate the image: ${errorMessage}`;
         }
     };
 
@@ -199,19 +214,20 @@ export const createAgentFunctions = (
                 return summary || `I couldn't find specific product details for "${query}".`;
             }
     
+            let billingErrorOccurred = false;
             const productResults = await Promise.all(productNames.map(async (name: string) => {
                 try {
-                    const imageResponse = await ai.models.generateImages({
-                        model: 'imagen-4.0-generate-001',
-                        prompt: `A professional product shot of ${name} on a clean white background.`,
+                    const imageResponse = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash-image',
+                        contents: { parts: [{ text: `A professional product shot of ${name} on a clean white background.` }] },
                         config: {
-                            numberOfImages: 1,
-                            outputMimeType: 'image/png',
-                            aspectRatio: '1:1',
+                            responseModalities: [Modality.IMAGE],
                         },
                     });
-                    const imageUrl = imageResponse.generatedImages?.[0]?.image?.imageBytes 
-                        ? `data:image/png;base64,${imageResponse.generatedImages[0].image.imageBytes}` 
+                    
+                    const imagePart = imageResponse.candidates?.[0]?.content?.parts?.find(part => part.inlineData);
+                    const imageUrl = (imagePart && imagePart.inlineData)
+                        ? `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`
                         : '';
                     
                     return { 
@@ -222,7 +238,9 @@ export const createAgentFunctions = (
                     };
                 } catch (imgError: any) {
                     console.error(`Failed to generate image for ${name}:`, imgError);
-                    // Don't trigger API key error for a single failed image, just return no image.
+                    if (String(imgError.message || '').includes('billing')) {
+                        billingErrorOccurred = true;
+                    }
                     return { name, imageUrl: '', price: 'See Retailer', store: 'Online' };
                 }
             }));
@@ -230,6 +248,11 @@ export const createAgentFunctions = (
             const resultString = `[PRODUCT_RESULTS]${JSON.stringify(productResults)}`;
             addTranscript('agent', resultString);
     
+            if (billingErrorOccurred) {
+                const billingSystemMessage = `I found product information but couldn't generate images. This may be because the image generation feature requires a Google Cloud project with billing enabled. For instructions, please visit: <a href="https://cloud.google.com/billing/docs/how-to/enable-billing" target="_blank" rel="noopener noreferrer" style="color: var(--accent-primary);">Enable Billing on Your Project</a>`;
+                addTranscript('system', billingSystemMessage);
+            }
+
             const groundingChunks = groundedResponse.candidates?.[0]?.groundingMetadata?.groundingChunks;
             if (groundingChunks && groundingChunks.length > 0) {
                 const sourcesHtml = groundingChunks.map(chunk => 
@@ -241,12 +264,23 @@ export const createAgentFunctions = (
             return summary || `I found a few options for "${query}". I'm displaying them for you now.`;
         } catch (error: any) {
             console.error("Error in searchProducts:", error);
-            const errorMessage = error.message || '';
-            if (errorMessage.includes('Requested entity was not found') || errorMessage.includes('API key not valid')) {
-                onApiKeyError();
-                return "There's an issue with the API key. I can't search for products right now.";
+            const errorMessage = String(error.message || '');
+            
+            if (errorMessage.includes('overloaded') || errorMessage.includes('UNAVAILABLE')) {
+                const unavailableMessage = `The search service is currently experiencing high traffic. Please try your request again in a few moments.`;
+                addTranscript('agent', unavailableMessage);
+                return unavailableMessage;
             }
-            const userMessage = `I had some trouble searching for "${query}". The web search may have failed. Please try again.`;
+            if (errorMessage.includes('API key not valid')) {
+                onApiKeyError();
+                return "There's an issue with your API key. Please provide a valid one.";
+            }
+            if (errorMessage.toLowerCase().includes('failed to fetch')) {
+                const userMessage = "I couldn't connect to the search service. Please check your internet connection and try again.";
+                addTranscript('agent', userMessage);
+                return userMessage;
+            }
+            const userMessage = `I had some trouble searching for "${query}". An error occurred: ${errorMessage}. Please try again.`;
             addTranscript('agent', userMessage);
             return userMessage;
         }

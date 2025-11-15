@@ -1,4 +1,5 @@
 
+
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
 import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
@@ -9,8 +10,9 @@ import * as db from '../services/database';
 import * as notifications from '../services/notifications';
 import { functionDeclarations, createAgentFunctions } from '../services/agentFunctions';
 import { useWakeWord } from './useWakeWord';
+import { getApiKey } from '../utils/apiKeyManager';
 
-export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyError: () => void }) => {
+export const useAgent = ({ user, onApiKeyError }: { user: User | null; onApiKeyError: () => void; }) => {
     const [agentStatus, setAgentStatus] = useState<AgentStatus>(AgentStatus.IDLE);
     const [transcriptHistory, setTranscriptHistory] = useState<TranscriptEntry[]>([]);
     const [events, setEvents] = useState<CalendarEvent[]>([]);
@@ -162,12 +164,21 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
             setAgentStatus(AgentStatus.ERROR);
             return;
         }
+        
+        const apiKey = getApiKey();
+        if (!apiKey) {
+            addTranscript('system', 'Gemini API key is not set. Please provide one.');
+            setAgentStatus(AgentStatus.ERROR);
+            onApiKeyError();
+            return;
+        }
+
         stopWakeWordListening(); // Stop listening for wake word
         setAgentStatus(AgentStatus.LISTENING);
         setTranscriptHistory([]);
         addTranscript('system', 'Listening...');
         
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const ai = new GoogleGenAI({ apiKey });
         const agentFunctions = createAgentFunctions(ai, user, addTranscript, (updatedUser) => {
             if (userRef.current) userRef.current = updatedUser;
         }, onApiKeyError);
@@ -354,13 +365,17 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                     },
                     onerror: (e: any) => {
                         console.error('Gemini Live Error:', e);
-                        const errorMessage = e.message || '';
-                        if (errorMessage.includes('Requested entity was not found') || errorMessage.includes('API key not valid')) {
-                            addTranscript('system', 'Connection failed due to an API key issue. Please select a valid API key to continue.');
+                        const errorMessage = String(e.message || '');
+                    
+                        if (errorMessage.includes('API key not valid')) {
+                            addTranscript('system', 'Your API key is invalid. Please enter a valid one in settings.');
                             setAgentStatus(AgentStatus.ERROR);
-                            onApiKeyError(); // This will show the ApiKeyInput page
+                            onApiKeyError();
+                        } else if (errorMessage.toLowerCase().includes('failed to fetch')) {
+                            addTranscript('system', 'Connection to Gemini failed. This could be a network issue, a browser extension blocking the request, or a temporary service outage. Please check your connection and try again.');
+                            setAgentStatus(AgentStatus.ERROR);
                         } else {
-                            addTranscript('system', 'Connection failed. Please check your network. Some browser extensions can also interfere.');
+                            addTranscript('system', `A connection error occurred: ${errorMessage}. Please check your network. Some browser extensions can also interfere.`);
                             setAgentStatus(AgentStatus.ERROR);
                         }
                     },
@@ -374,7 +389,7 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
             addTranscript('system', 'Could not access microphone.');
             setAgentStatus(AgentStatus.ERROR);
         }
-    }, [addTranscript, stopConversation, onApiKeyError, user, setTranscriptHistory]);
+    }, [addTranscript, stopConversation, user, setTranscriptHistory, onApiKeyError]);
     
     const { startListening: startWakeWordListening, stopListening: stopWakeWordListening } = useWakeWord({
         wakeWords: WAKE_WORDS,

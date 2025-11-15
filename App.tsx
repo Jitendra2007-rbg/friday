@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, createContext, useContext } from 'react';
 import AgentInterface from './pages/AgentInterface';
 import EventsPage from './pages/EventsPage';
@@ -13,6 +14,7 @@ import { requestNotificationPermission } from './utils/capacitor';
 import SettingsPage from './pages/SettingsPage';
 import './utils/settings'; // Applies theme on initial load
 import ApiKeyInput from './pages/ApiKeyInput';
+import { hasApiKey, clearApiKey, getApiKey } from './utils/apiKeyManager';
 
 interface AuthContextType {
   session: Session | null;
@@ -26,6 +28,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchUserProfile = async (sessionUser: SupabaseUser): Promise<User | null> => {
@@ -71,7 +74,16 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
 
     const getSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      setAuthError(null);
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError) {
+          console.error("Error getting session:", sessionError);
+          setAuthError(`Failed to connect to authentication service: ${sessionError.message}. Please check your network connection.`);
+          setLoading(false);
+          return;
+      }
+
       setSession(session);
       if (session?.user) {
         const userProfile = await fetchUserProfile(session.user);
@@ -110,6 +122,21 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     setUser(null);
     setSession(null);
   };
+
+  if (authError) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center p-4 text-center" style={{backgroundColor: 'var(--bg-primary)'}}>
+          <h2 className="text-xl font-bold text-red-400 mb-4">Connection Error</h2>
+          <p className="text-gray-300 mb-6 max-w-md">{authError}</p>
+          <button 
+            onClick={() => window.location.reload()} 
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
+          >
+            Retry
+          </button>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -193,21 +220,16 @@ const App: React.FC = () => {
 const AuthManager: React.FC = () => {
     const { session, user } = useAuth();
     const [authRoute, setAuthRoute] = useState<'login' | 'signup'>('login');
-    const [apiKeySelected, setApiKeySelected] = useState<boolean | null>(null);
+    const [keyExists, setKeyExists] = useState(hasApiKey());
 
-    useEffect(() => {
-        if (session && user) {
-            // Only check for the key once the user profile is loaded
-            const checkApiKey = async () => {
-                const hasKey = await window.aistudio.hasSelectedApiKey();
-                setApiKeySelected(hasKey);
-            };
-            checkApiKey();
-        } else {
-            // Reset when session is lost
-            setApiKeySelected(null);
-        }
-    }, [session, user]);
+    const handleKeySelected = () => {
+      setKeyExists(true);
+    };
+
+    const resetApiKey = () => {
+      clearApiKey();
+      setKeyExists(false);
+    };
 
     if (!session) {
         return authRoute === 'login' 
@@ -215,8 +237,12 @@ const AuthManager: React.FC = () => {
             : <SignupPage onSwitchToLogin={() => setAuthRoute('login')} />;
     }
 
-    if (session && (!user || apiKeySelected === null)) {
-      // Show spinner while waiting for user profile OR API key check
+    if (!keyExists) {
+        return <ApiKeyInput onKeySelected={handleKeySelected} />;
+    }
+
+    if (session && !user) {
+      // Show spinner while waiting for user profile to load.
       return (
           <div className="h-full flex items-center justify-center" style={{backgroundColor: 'var(--bg-primary)'}}>
               <svg className="animate-spin h-10 w-10 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -227,11 +253,7 @@ const AuthManager: React.FC = () => {
       );
     }
     
-    if (!apiKeySelected) {
-        return <ApiKeyInput onKeySelected={() => setApiKeySelected(true)} />;
-    }
-
-    return <MainApp resetApiKey={() => setApiKeySelected(false)} />;
+    return <MainApp resetApiKey={resetApiKey} />;
 };
 
 export default App;
