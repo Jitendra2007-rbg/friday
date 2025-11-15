@@ -1,3 +1,4 @@
+
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
 import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
@@ -169,7 +170,7 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const agentFunctions = createAgentFunctions(ai, user, addTranscript, (updatedUser) => {
             if (userRef.current) userRef.current = updatedUser;
-        });
+        }, onApiKeyError);
 
         try {
             mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -351,11 +352,17 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null, onApiKeyE
                           nextStartTime.current = 0;
                        }
                     },
-                    onerror: (e) => {
+                    onerror: (e: any) => {
                         console.error('Gemini Live Error:', e);
-                        addTranscript('system', 'Connection failed. Please check your API key and network. Some browser extensions can also interfere. You have been logged out.');
-                        setAgentStatus(AgentStatus.ERROR);
-                        onApiKeyError();
+                        const errorMessage = e.message || '';
+                        if (errorMessage.includes('Requested entity was not found') || errorMessage.includes('API key not valid')) {
+                            addTranscript('system', 'Connection failed due to an API key issue. Please select a valid API key to continue.');
+                            setAgentStatus(AgentStatus.ERROR);
+                            onApiKeyError(); // This will show the ApiKeyInput page
+                        } else {
+                            addTranscript('system', 'Connection failed. Please check your network. Some browser extensions can also interfere.');
+                            setAgentStatus(AgentStatus.ERROR);
+                        }
                     },
                     onclose: () => {
                         stopConversation();

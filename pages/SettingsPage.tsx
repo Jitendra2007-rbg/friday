@@ -10,6 +10,7 @@ interface SettingsPageProps {
   navigate: (page: string) => void;
   logout: () => void;
   user: User | null;
+  resetApiKey: () => void;
 }
 
 const themes = [
@@ -26,7 +27,7 @@ const voices = [
     { id: 'Fenrir', name: 'Fenrir (Assertive)' },
 ];
 
-const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) => {
+const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user, resetApiKey }) => {
   const [settings, setSettings] = useState(getSettings());
   const [isSaving, setIsSaving] = useState(false);
   const [isPlaying, setIsPlaying] = useState<string | null>(null);
@@ -83,8 +84,12 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) =
         } else {
              setIsPlaying(null);
         }
-    } catch (error) {
+    } catch (error: any) {
         console.error("Failed to play voice sample:", error);
+        const errorMessage = error.message || '';
+        if (errorMessage.includes('Requested entity was not found') || errorMessage.includes('API key not valid')) {
+            resetApiKey();
+        }
         setIsPlaying(null);
     }
   };

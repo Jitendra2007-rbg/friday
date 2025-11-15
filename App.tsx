@@ -12,6 +12,7 @@ import { User } from './types';
 import { requestNotificationPermission } from './utils/capacitor';
 import SettingsPage from './pages/SettingsPage';
 import './utils/settings'; // Applies theme on initial load
+import ApiKeyInput from './pages/ApiKeyInput';
 
 interface AuthContextType {
   session: Session | null;
@@ -136,10 +137,10 @@ export const useAuth = () => {
   return context;
 };
 
-const MainApp: React.FC = () => {
+const MainApp: React.FC<{ resetApiKey: () => void }> = ({ resetApiKey }) => {
   const { user, logout } = useAuth();
   const [page, setPage] = useState('agent');
-  const agentState = useAgent({ user, onApiKeyError: logout });
+  const agentState = useAgent({ user, onApiKeyError: resetApiKey });
 
   const navigate = (newPage: string) => {
     setPage(newPage);
@@ -163,7 +164,7 @@ const MainApp: React.FC = () => {
                   updateAlarm={agentState.updateAlarm}
                 />;
       case 'settings':
-        return <SettingsPage navigate={navigate} logout={logout} user={user} />;
+        return <SettingsPage navigate={navigate} logout={logout} user={user} resetApiKey={resetApiKey} />;
       case 'agent':
       default:
         return <AgentInterface agent={agentState} navigate={navigate} user={user} />;
@@ -192,6 +193,21 @@ const App: React.FC = () => {
 const AuthManager: React.FC = () => {
     const { session, user } = useAuth();
     const [authRoute, setAuthRoute] = useState<'login' | 'signup'>('login');
+    const [apiKeySelected, setApiKeySelected] = useState<boolean | null>(null);
+
+    useEffect(() => {
+        if (session && user) {
+            // Only check for the key once the user profile is loaded
+            const checkApiKey = async () => {
+                const hasKey = await window.aistudio.hasSelectedApiKey();
+                setApiKeySelected(hasKey);
+            };
+            checkApiKey();
+        } else {
+            // Reset when session is lost
+            setApiKeySelected(null);
+        }
+    }, [session, user]);
 
     if (!session) {
         return authRoute === 'login' 
@@ -199,9 +215,8 @@ const AuthManager: React.FC = () => {
             : <SignupPage onSwitchToLogin={() => setAuthRoute('login')} />;
     }
 
-    if (session && !user) {
-      // We have a session but are waiting for the user profile to load.
-      // This prevents the blank screen in MainApp by showing a spinner.
+    if (session && (!user || apiKeySelected === null)) {
+      // Show spinner while waiting for user profile OR API key check
       return (
           <div className="h-full flex items-center justify-center" style={{backgroundColor: 'var(--bg-primary)'}}>
               <svg className="animate-spin h-10 w-10 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -211,8 +226,12 @@ const AuthManager: React.FC = () => {
           </div>
       );
     }
+    
+    if (!apiKeySelected) {
+        return <ApiKeyInput onKeySelected={() => setApiKeySelected(true)} />;
+    }
 
-    return <MainApp />;
+    return <MainApp resetApiKey={() => setApiKeySelected(false)} />;
 };
 
 export default App;

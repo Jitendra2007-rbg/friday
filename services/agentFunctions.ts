@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, FunctionDeclaration, Type } from '@google/genai';
 import { User, CalendarEvent, Alarm } from '../types';
 import { isNativePlatform, launchAppByUrl } from '../utils/capacitor';
@@ -47,7 +48,8 @@ export const createAgentFunctions = (
     ai: GoogleGenAI,
     user: User,
     addTranscript: AddTranscriptFunction,
-    updateUser: (user: User) => void
+    updateUser: (user: User) => void,
+    onApiKeyError: () => void
 ) => {
     const openWebsite = (url: string): string => {
         if (!url || typeof url !== 'string') {
@@ -165,8 +167,13 @@ export const createAgentFunctions = (
                 console.warn("Imagen response did not contain an image:", response);
                 return "I couldn't generate an image for that prompt. Please try a different one.";
             }
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error generating image:", error);
+            const errorMessage = error.message || '';
+            if (errorMessage.includes('Requested entity was not found') || errorMessage.includes('API key not valid')) {
+                onApiKeyError();
+                return "There's an issue with the API key. I can't generate an image right now.";
+            }
             return "I ran into an error while trying to generate the image.";
         }
     };
@@ -193,25 +200,31 @@ export const createAgentFunctions = (
             }
     
             const productResults = await Promise.all(productNames.map(async (name: string) => {
-                const imageResponse = await ai.models.generateImages({
-                    model: 'imagen-4.0-generate-001',
-                    prompt: `A professional product shot of ${name} on a clean white background.`,
-                    config: {
-                        numberOfImages: 1,
-                        outputMimeType: 'image/png',
-                        aspectRatio: '1:1',
-                    },
-                });
-                const imageUrl = imageResponse.generatedImages?.[0]?.image?.imageBytes 
-                    ? `data:image/png;base64,${imageResponse.generatedImages[0].image.imageBytes}` 
-                    : '';
-                
-                return { 
-                    name, 
-                    imageUrl,
-                    price: 'See Retailer',
-                    store: 'Online' 
-                };
+                try {
+                    const imageResponse = await ai.models.generateImages({
+                        model: 'imagen-4.0-generate-001',
+                        prompt: `A professional product shot of ${name} on a clean white background.`,
+                        config: {
+                            numberOfImages: 1,
+                            outputMimeType: 'image/png',
+                            aspectRatio: '1:1',
+                        },
+                    });
+                    const imageUrl = imageResponse.generatedImages?.[0]?.image?.imageBytes 
+                        ? `data:image/png;base64,${imageResponse.generatedImages[0].image.imageBytes}` 
+                        : '';
+                    
+                    return { 
+                        name, 
+                        imageUrl,
+                        price: 'See Retailer',
+                        store: 'Online' 
+                    };
+                } catch (imgError: any) {
+                    console.error(`Failed to generate image for ${name}:`, imgError);
+                    // Don't trigger API key error for a single failed image, just return no image.
+                    return { name, imageUrl: '', price: 'See Retailer', store: 'Online' };
+                }
             }));
             
             const resultString = `[PRODUCT_RESULTS]${JSON.stringify(productResults)}`;
@@ -226,11 +239,16 @@ export const createAgentFunctions = (
             }
     
             return summary || `I found a few options for "${query}". I'm displaying them for you now.`;
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error in searchProducts:", error);
-            const errorMessage = `I had some trouble searching for "${query}". The web search may have failed. Please try again.`;
-            addTranscript('agent', errorMessage);
-            return errorMessage;
+            const errorMessage = error.message || '';
+            if (errorMessage.includes('Requested entity was not found') || errorMessage.includes('API key not valid')) {
+                onApiKeyError();
+                return "There's an issue with the API key. I can't search for products right now.";
+            }
+            const userMessage = `I had some trouble searching for "${query}". The web search may have failed. Please try again.`;
+            addTranscript('agent', userMessage);
+            return userMessage;
         }
     };
     
