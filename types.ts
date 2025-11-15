@@ -52,7 +52,7 @@ declare global {
 
     webkitAudioContext: typeof AudioContext;
 
-    // FIX: Added the `readonly` modifier to resolve a declaration conflict for `aistudio`.
+    // FIX: Added the `readonly` modifier back to resolve a declaration conflict for `aistudio`.
     readonly aistudio: AIStudio;
   }
 }

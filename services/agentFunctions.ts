@@ -50,7 +50,6 @@ export const createAgentFunctions = (
     user: User,
     addTranscript: AddTranscriptFunction,
     updateUser: (user: User) => void,
-    onApiKeyError: () => void
 ) => {
     const openWebsite = (url: string): string => {
         if (!url || typeof url !== 'string') {
@@ -178,8 +177,7 @@ export const createAgentFunctions = (
                 return "The free request limit for image generation has been reached for today. I've added a link with more details to our chat.";
             }
             if (errorMessage.includes('API key not valid')) {
-                onApiKeyError();
-                return "There's an issue with your API key. Please provide a valid one.";
+                return "There's an issue with the configured API key.";
             }
             if (errorMessage.toLowerCase().includes('failed to fetch')) {
                 return "I couldn't connect to the image generation service. Please check your internet connection.";
@@ -272,8 +270,7 @@ export const createAgentFunctions = (
                 return unavailableMessage;
             }
             if (errorMessage.includes('API key not valid')) {
-                onApiKeyError();
-                return "There's an issue with your API key. Please provide a valid one.";
+                return "There's an issue with the configured API key.";
             }
             if (errorMessage.toLowerCase().includes('failed to fetch')) {
                 const userMessage = "I couldn't connect to the search service. Please check your internet connection and try again.";

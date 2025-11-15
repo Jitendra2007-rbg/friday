@@ -10,9 +10,8 @@ import * as db from '../services/database';
 import * as notifications from '../services/notifications';
 import { functionDeclarations, createAgentFunctions } from '../services/agentFunctions';
 import { useWakeWord } from './useWakeWord';
-import { getApiKey } from '../utils/apiKeyManager';
 
-export const useAgent = ({ user, onApiKeyError }: { user: User | null; onApiKeyError: () => void; }) => {
+export const useAgent = ({ user }: { user: User | null; }) => {
     const [agentStatus, setAgentStatus] = useState<AgentStatus>(AgentStatus.IDLE);
     const [transcriptHistory, setTranscriptHistory] = useState<TranscriptEntry[]>([]);
     const [events, setEvents] = useState<CalendarEvent[]>([]);
@@ -165,11 +164,10 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null; onApiKeyE
             return;
         }
         
-        const apiKey = getApiKey();
+        const apiKey = process.env.API_KEY;
         if (!apiKey) {
-            addTranscript('system', 'Gemini API key is not set. Please provide one.');
+            addTranscript('system', 'Gemini API key is not configured for this application. The agent cannot function.');
             setAgentStatus(AgentStatus.ERROR);
-            onApiKeyError();
             return;
         }
 
@@ -181,7 +179,7 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null; onApiKeyE
         const ai = new GoogleGenAI({ apiKey });
         const agentFunctions = createAgentFunctions(ai, user, addTranscript, (updatedUser) => {
             if (userRef.current) userRef.current = updatedUser;
-        }, onApiKeyError);
+        });
 
         try {
             mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -368,9 +366,8 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null; onApiKeyE
                         const errorMessage = String(e.message || '');
                     
                         if (errorMessage.includes('API key not valid')) {
-                            addTranscript('system', 'Your API key is invalid. Please enter a valid one in settings.');
+                            addTranscript('system', 'The configured Gemini API key is invalid.');
                             setAgentStatus(AgentStatus.ERROR);
-                            onApiKeyError();
                         } else if (errorMessage.toLowerCase().includes('failed to fetch')) {
                             addTranscript('system', 'Connection to Gemini failed. This could be a network issue, a browser extension blocking the request, or a temporary service outage. Please check your connection and try again.');
                             setAgentStatus(AgentStatus.ERROR);
@@ -389,7 +386,7 @@ export const useAgent = ({ user, onApiKeyError }: { user: User | null; onApiKeyE
             addTranscript('system', 'Could not access microphone.');
             setAgentStatus(AgentStatus.ERROR);
         }
-    }, [addTranscript, stopConversation, user, setTranscriptHistory, onApiKeyError]);
+    }, [addTranscript, stopConversation, user, setTranscriptHistory]);
     
     const { startListening: startWakeWordListening, stopListening: stopWakeWordListening } = useWakeWord({
         wakeWords: WAKE_WORDS,

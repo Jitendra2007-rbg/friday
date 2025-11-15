@@ -13,8 +13,6 @@ import { User } from './types';
 import { requestNotificationPermission } from './utils/capacitor';
 import SettingsPage from './pages/SettingsPage';
 import './utils/settings'; // Applies theme on initial load
-import ApiKeyInput from './pages/ApiKeyInput';
-import { hasApiKey, clearApiKey, getApiKey } from './utils/apiKeyManager';
 
 interface AuthContextType {
   session: Session | null;
@@ -86,11 +84,16 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
       setSession(session);
       if (session?.user) {
-        const userProfile = await fetchUserProfile(session.user);
-        if (userProfile) {
-            setUser(userProfile);
-        } else {
-            console.error("Failed to fetch user profile, logging out.");
+        try {
+            const userProfile = await fetchUserProfile(session.user);
+            if (userProfile) {
+                setUser(userProfile);
+            } else {
+                console.error("Failed to fetch user profile, logging out.");
+                await supabase.auth.signOut();
+            }
+        } catch (err) {
+            console.error("Error fetching user profile:", err);
             await supabase.auth.signOut();
         }
       }
@@ -102,12 +105,17 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setSession(session);
       if (session?.user) {
-         const userProfile = await fetchUserProfile(session.user);
-         if (userProfile) {
-            setUser(userProfile);
-         } else {
-            console.error("User profile invalid on auth state change, logging out.");
-            await supabase.auth.signOut();
+         try {
+            const userProfile = await fetchUserProfile(session.user);
+            if (userProfile) {
+                setUser(userProfile);
+            } else {
+                console.error("User profile invalid on auth state change, logging out.");
+                await supabase.auth.signOut();
+            }
+         } catch (err) {
+             console.error("Error fetching user profile on auth state change:", err);
+             await supabase.auth.signOut();
          }
       } else {
         setUser(null);
@@ -164,10 +172,10 @@ export const useAuth = () => {
   return context;
 };
 
-const MainApp: React.FC<{ resetApiKey: () => void }> = ({ resetApiKey }) => {
+const MainApp: React.FC = () => {
   const { user, logout } = useAuth();
   const [page, setPage] = useState('agent');
-  const agentState = useAgent({ user, onApiKeyError: resetApiKey });
+  const agentState = useAgent({ user });
 
   const navigate = (newPage: string) => {
     setPage(newPage);
@@ -191,7 +199,7 @@ const MainApp: React.FC<{ resetApiKey: () => void }> = ({ resetApiKey }) => {
                   updateAlarm={agentState.updateAlarm}
                 />;
       case 'settings':
-        return <SettingsPage navigate={navigate} logout={logout} user={user} resetApiKey={resetApiKey} />;
+        return <SettingsPage navigate={navigate} logout={logout} user={user} />;
       case 'agent':
       default:
         return <AgentInterface agent={agentState} navigate={navigate} user={user} />;
@@ -220,40 +228,14 @@ const App: React.FC = () => {
 const AuthManager: React.FC = () => {
     const { session, user } = useAuth();
     const [authRoute, setAuthRoute] = useState<'login' | 'signup'>('login');
-    const [keyExists, setKeyExists] = useState(hasApiKey());
 
-    const handleKeySelected = () => {
-      setKeyExists(true);
-    };
-
-    const resetApiKey = () => {
-      clearApiKey();
-      setKeyExists(false);
-    };
-
-    if (!session) {
+    if (!session || !user) {
         return authRoute === 'login' 
             ? <LoginPage onSwitchToSignup={() => setAuthRoute('signup')} /> 
             : <SignupPage onSwitchToLogin={() => setAuthRoute('login')} />;
     }
-
-    if (!keyExists) {
-        return <ApiKeyInput onKeySelected={handleKeySelected} />;
-    }
-
-    if (session && !user) {
-      // Show spinner while waiting for user profile to load.
-      return (
-          <div className="h-full flex items-center justify-center" style={{backgroundColor: 'var(--bg-primary)'}}>
-              <svg className="animate-spin h-10 w-10 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-          </div>
-      );
-    }
     
-    return <MainApp resetApiKey={resetApiKey} />;
+    return <MainApp />;
 };
 
 export default App;

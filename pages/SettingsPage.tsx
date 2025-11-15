@@ -1,19 +1,16 @@
 
 
-
 import React, { useState, useEffect } from 'react';
 import { GoogleGenAI, Modality } from '@google/genai';
 import { BackIcon, CogIcon, PaintBrushIcon, BellIcon, SpeakerWaveIcon, CheckIcon } from '../components/Icons';
 import { getSettings, saveSettings } from '../utils/settings';
 import { User } from '../types';
 import { decode, decodeAudioData } from '../utils/audio';
-import { getApiKey } from '../utils/apiKeyManager';
 
 interface SettingsPageProps {
   navigate: (page: string) => void;
   logout: () => void;
   user: User | null;
-  resetApiKey: () => void;
 }
 
 const themes = [
@@ -30,7 +27,7 @@ const voices = [
     { id: 'Fenrir', name: 'Fenrir (Assertive)' },
 ];
 
-const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user, resetApiKey }) => {
+const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) => {
   const [settings, setSettings] = useState(getSettings());
   const [isSaving, setIsSaving] = useState(false);
   const [isPlaying, setIsPlaying] = useState<string | null>(null);
@@ -57,10 +54,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user, res
   const playVoiceSample = async (voiceName: string) => {
     if (!user || isPlaying) return;
     
-    const apiKey = getApiKey();
+    const apiKey = process.env.API_KEY;
     if (!apiKey) {
-      alert("Cannot play voice sample, API key is missing. Please set it first.");
-      resetApiKey();
+      alert("Cannot play voice sample, API key is not configured for this application.");
       return;
     }
 
@@ -99,8 +95,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user, res
         console.error("Failed to play voice sample:", error);
         const errorMessage = error.message || '';
         if (errorMessage.includes('API key not valid')) {
-            alert("Your API key is invalid. Please enter a valid one.");
-            resetApiKey();
+            alert("The configured API key is invalid.");
         }
         setIsPlaying(null);
     }
@@ -163,17 +158,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user, res
                         className={`relative inline-flex items-center h-6 rounded-full w-11 transition-colors ${settings.notifications ? 'bg-green-500' : 'bg-gray-600'}`}
                     >
                         <span className={`inline-block w-4 h-4 transform bg-white rounded-full transition-transform ${settings.notifications ? 'translate-x-6' : 'translate-x-1'}`}/>
-                    </button>
-                </div>
-            </div>
-            
-            {/* API Key Management */}
-            <div>
-                <h2 className="text-lg font-semibold flex items-center gap-2 mb-2" style={{color: 'var(--text-secondary)'}}><svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg> API Key</h2>
-                <div className="flex items-center justify-between p-3 rounded-lg" style={{backgroundColor: `var(--bg-tertiary)`}}>
-                    <span>Manage your Gemini API Key</span>
-                     <button onClick={resetApiKey} className="font-semibold py-2 px-4 rounded-lg transition-colors text-white" style={{backgroundColor: 'var(--bg-interactive)'}}>
-                        Change API Key
                     </button>
                 </div>
             </div>
