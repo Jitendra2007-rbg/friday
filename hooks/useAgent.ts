@@ -11,6 +11,21 @@ import * as notifications from '../services/notifications';
 import { functionDeclarations, createAgentFunctions } from '../services/agentFunctions';
 import { useWakeWord } from './useWakeWord';
 
+const createBlobFromAudio = (data: Float32Array): Blob => {
+    const l = data.length;
+    const int16 = new Int16Array(l);
+    for (let i = 0; i < l; i++) {
+        // Clamp the values to the -1.0 to 1.0 range before conversion
+        const s = Math.max(-1, Math.min(1, data[i]));
+        // Symmetrically convert to 16-bit signed integer
+        int16[i] = s * 32767;
+    }
+    return {
+        data: encode(new Uint8Array(int16.buffer)),
+        mimeType: 'audio/pcm;rate=16000',
+    };
+};
+
 export const useAgent = ({ user }: { user: User | null; }) => {
     const [agentStatus, setAgentStatus] = useState<AgentStatus>(AgentStatus.IDLE);
     const [transcriptHistory, setTranscriptHistory] = useState<TranscriptEntry[]>([]);
@@ -139,16 +154,12 @@ export const useAgent = ({ user }: { user: User | null; }) => {
     const stopConversation = useCallback(() => {
         if (agentStatus === AgentStatus.IDLE && !sessionPromiseRef.current) return;
         
-        mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+        // Disconnect the audio processor from the Gemini session, but DO NOT stop the media stream.
+        // The stream needs to stay active for the wake word listener.
         scriptProcessorRef.current?.disconnect();
-        inputAudioContextRef.current?.close().catch(console.error);
-        outputAudioContextRef.current?.close().catch(console.error);
         sessionPromiseRef.current?.then(session => session.close()).catch(console.error);
 
-        mediaStreamRef.current = null;
         scriptProcessorRef.current = null;
-        inputAudioContextRef.current = null;
-        outputAudioContextRef.current = null;
         sessionPromiseRef.current = null;
         pendingImageRef.current = null;
 
@@ -162,6 +173,41 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         if (!hasInteracted) {
             setHasInteracted(true);
         }
+        
+        // --- Centralized Microphone Access ---
+        // Request microphone access only once when the first conversation starts.
+        // On subsequent starts (e.g., via wake word), reuse the existing stream.
+        if (!mediaStreamRef.current || !mediaStreamRef.current.active) {
+            try {
+                mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+            } catch (error) {
+                console.error("Failed to start conversation:", error);
+                if (error instanceof Error && (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError')) {
+                    let message = 'Microphone access was denied.';
+                    if (navigator.permissions) {
+                        try {
+                            const permStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+                            if (permStatus.state === 'denied') {
+                                message = 'Microphone access has been permanently blocked by your browser. You need to go into your browser\'s site settings to allow it.';
+                            } else if (permStatus.state === 'granted') {
+                                message = 'Microphone access is allowed, but the browser blocked the request. This can happen for security reasons if not started by a click. Please try starting the conversation manually first.';
+                            } else { // 'prompt'
+                                message = 'Please allow microphone access when prompted by your browser.';
+                            }
+                        } catch (e) {
+                            console.warn("Could not query permissions API", e);
+                            message = 'Microphone access was denied. Please check your browser settings.';
+                        }
+                    }
+                    addTranscript('system', message);
+                } else {
+                    addTranscript('system', 'Could not access microphone. Please ensure it is connected and enabled.');
+                }
+                setAgentStatus(AgentStatus.ERROR);
+                return; // Stop if we can't get the mic
+            }
+        }
+
 
         if (!user) {
             addTranscript('system', 'User not logged in. Conversation cannot start.');
@@ -169,7 +215,6 @@ export const useAgent = ({ user }: { user: User | null; }) => {
             return;
         }
         
-        // FIX: Use `process.env.API_KEY` directly and remove API key checks, per guidelines.
         stopWakeWordListening(); // Stop listening for wake word
         setAgentStatus(AgentStatus.LISTENING);
         setTranscriptHistory([]);
@@ -181,12 +226,21 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         });
 
         try {
-            mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-            inputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-            outputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+            // Ensure audio contexts are created and ready.
+            if (!inputAudioContextRef.current || inputAudioContextRef.current.state === 'closed') {
+                inputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+            }
+            if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
+                outputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+            }
+
+            if (inputAudioContextRef.current.state === 'suspended') {
+                await inputAudioContextRef.current.resume();
+            }
             if (outputAudioContextRef.current.state === 'suspended') {
                 await outputAudioContextRef.current.resume();
             }
+
             nextStartTime.current = 0;
             
             const settings = getSettings();
@@ -240,7 +294,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                         scriptProcessorRef.current = inputAudioContextRef.current!.createScriptProcessor(4096, 1, 1);
                         scriptProcessorRef.current.onaudioprocess = (event) => {
                             const inputData = event.inputBuffer.getChannelData(0);
-                            const pcmBlob: Blob = { data: encode(new Uint8Array(new Int16Array(inputData.map(x => x * 32768)).buffer)), mimeType: 'audio/pcm;rate=16000' };
+                            const pcmBlob = createBlobFromAudio(inputData);
                             sessionPromiseRef.current?.then((session) => {
                                 if (pendingImageRef.current) {
                                     const imageBase64 = pendingImageRef.current;
@@ -376,17 +430,17 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                         }
                     },
                     onclose: () => {
+                        // The conversation is stopped server-side or due to an error.
+                        // We reflect this state change, which will then trigger the wake word listener.
                         stopConversation();
                     },
                 },
             });
         } catch (error) {
-            console.error("Failed to start conversation:", error);
-            if (error instanceof Error && error.name === 'NotAllowedError') {
-                addTranscript('system', 'Microphone access was denied. Please allow microphone access in your browser settings to use the voice features.');
-            } else {
-                addTranscript('system', 'Could not access microphone. Please ensure it is connected and enabled.');
-            }
+            // This top-level catch is for unexpected errors during the setup phase,
+            // as microphone permissions are now handled before this block.
+            console.error("An unexpected error occurred during conversation setup:", error);
+            addTranscript('system', 'An unexpected error occurred. Please try again.');
             setAgentStatus(AgentStatus.ERROR);
         }
     }, [addTranscript, stopConversation, user, setTranscriptHistory, hasInteracted]);
@@ -416,7 +470,8 @@ export const useAgent = ({ user }: { user: User | null; }) => {
 
     useEffect(() => {
         return () => {
-            // General cleanup
+            // This is the final cleanup when the component unmounts.
+            // This is where we release the microphone completely.
             mediaStreamRef.current?.getTracks().forEach(track => track.stop());
             if (scriptProcessorRef.current) {
                 scriptProcessorRef.current.disconnect();
