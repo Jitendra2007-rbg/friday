@@ -13,6 +13,8 @@ import { User } from './types';
 import { requestNotificationPermission } from './utils/capacitor';
 import SettingsPage from './pages/SettingsPage';
 import './utils/settings'; // Applies theme on initial load
+import { ApiKeyProvider, useApiKey } from './contexts/ApiKeyContext';
+import SelectApiKeyPage from './pages/SelectApiKeyPage';
 
 interface AuthContextType {
   session: Session | null;
@@ -173,18 +175,6 @@ const MainApp: React.FC = () => {
   );
 };
 
-const App: React.FC = () => {
-  useEffect(() => {
-    requestNotificationPermission();
-  }, []);
-
-  return (
-    <AuthProvider>
-      <AuthManager />
-    </AuthProvider>
-  );
-};
-
 const AuthManager: React.FC = () => {
     const { session, user } = useAuth();
     const [authRoute, setAuthRoute] = useState<'login' | 'signup'>('login');
@@ -197,5 +187,33 @@ const AuthManager: React.FC = () => {
     
     return <MainApp />;
 };
+
+const AppContent: React.FC = () => {
+    const { isKeyReady } = useApiKey();
+    
+    if (!isKeyReady) {
+        return <SelectApiKeyPage />;
+    }
+    
+    return (
+        <AuthProvider>
+            <AuthManager />
+        </AuthProvider>
+    );
+};
+
+
+const App: React.FC = () => {
+  useEffect(() => {
+    requestNotificationPermission();
+  }, []);
+
+  return (
+    <ApiKeyProvider>
+      <AppContent />
+    </ApiKeyProvider>
+  );
+};
+
 
 export default App;

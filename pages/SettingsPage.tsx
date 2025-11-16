@@ -1,11 +1,13 @@
 
 
+
 import React, { useState, useEffect } from 'react';
 import { GoogleGenAI, Modality } from '@google/genai';
 import { BackIcon, CogIcon, PaintBrushIcon, BellIcon, SpeakerWaveIcon, CheckIcon } from '../components/Icons';
 import { getSettings, saveSettings } from '../utils/settings';
 import { User } from '../types';
 import { decode, decodeAudioData } from '../utils/audio';
+import { useApiKey } from '../contexts/ApiKeyContext';
 
 interface SettingsPageProps {
   navigate: (page: string) => void;
@@ -31,6 +33,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) =
   const [settings, setSettings] = useState(getSettings());
   const [isSaving, setIsSaving] = useState(false);
   const [isPlaying, setIsPlaying] = useState<string | null>(null);
+  const { resetApiKeyStatus } = useApiKey();
 
   const handleSettingChange = (key: keyof typeof settings, value: any) => {
     setSettings(prev => ({ ...prev, [key]: value }));
@@ -54,7 +57,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) =
   const playVoiceSample = async (voiceName: string) => {
     if (!user || isPlaying) return;
 
-    // FIX: Remove API key check and use `process.env.API_KEY` directly per guidelines.
     setIsPlaying(voiceName);
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -89,8 +91,11 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) =
     } catch (error: any) {
         console.error("Failed to play voice sample:", error);
         const errorMessage = error.message || '';
-        if (errorMessage.includes('API key not valid')) {
-            alert("The configured API key is invalid.");
+        if (errorMessage.includes('API key not valid') || errorMessage.includes('Requested entity was not found')) {
+            alert("The selected API key is invalid. Please re-select a valid key.");
+            resetApiKeyStatus();
+        } else {
+            alert(`Failed to play voice sample: ${errorMessage}`);
         }
         setIsPlaying(null);
     }

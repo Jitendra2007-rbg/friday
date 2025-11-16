@@ -1,5 +1,6 @@
 
 
+
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
 import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
@@ -10,6 +11,7 @@ import * as db from '../services/database';
 import * as notifications from '../services/notifications';
 import { functionDeclarations, createAgentFunctions } from '../services/agentFunctions';
 import { useWakeWord } from './useWakeWord';
+import { useApiKey } from '../contexts/ApiKeyContext';
 
 const createBlobFromAudio = (data: Float32Array): Blob => {
     const l = data.length;
@@ -33,6 +35,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
     const [alarms, setAlarms] = useState<Alarm[]>([]);
     const [hasInteracted, setHasInteracted] = useState(false);
     const userRef = useRef(user);
+    const { resetApiKeyStatus } = useApiKey();
 
     const sessionPromiseRef = useRef<Promise<any> | null>(null);
     const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -56,6 +59,21 @@ export const useAgent = ({ user }: { user: User | null; }) => {
     const addTranscript = useCallback((speaker: 'user' | 'agent' | 'system', text: string) => {
         setTranscriptHistory(prev => [...prev, { id: Date.now().toString(), speaker, text }]);
     }, []);
+    
+    const handleApiError = useCallback((error: any) => {
+        console.error('Gemini API Error:', error);
+        const errorMessage = String(error.message || '');
+    
+        if (errorMessage.includes('API key not valid') || errorMessage.includes('Requested entity was not found')) {
+            addTranscript('system', 'The selected API key is invalid or has been revoked. Please select a valid key.');
+            resetApiKeyStatus();
+        } else if (errorMessage.toLowerCase().includes('failed to fetch')) {
+            addTranscript('system', 'Connection to Gemini failed. This could be a network issue, a browser extension blocking the request, or a temporary service outage. Please check your connection and try again.');
+        } else {
+            addTranscript('system', `A connection error occurred: ${errorMessage}. Please check your network. Some browser extensions can also interfere.`);
+        }
+        setAgentStatus(AgentStatus.ERROR);
+    }, [addTranscript, resetApiKeyStatus]);
 
     const setPendingImage = useCallback((base64: string | null) => {
         pendingImageRef.current = base64;
@@ -226,12 +244,12 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         setTranscriptHistory([]);
         addTranscript('system', 'Connecting...');
         
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        const agentFunctions = createAgentFunctions(ai, user, addTranscript, (updatedUser) => {
-            if (userRef.current) userRef.current = updatedUser;
-        });
-
         try {
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+            const agentFunctions = createAgentFunctions(ai, user, addTranscript, (updatedUser) => {
+                if (userRef.current) userRef.current = updatedUser;
+            });
+
             // Ensure audio contexts are created and ready.
             if (!inputAudioContextRef.current || inputAudioContextRef.current.state === 'closed') {
                 inputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
@@ -420,6 +438,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                                     }
                                 } catch (error) {
                                     console.error(`Error executing tool call ${fc.name}:`, error);
+                                    handleApiError(error);
                                     result = error instanceof Error ? error.message : "An unknown error occurred while executing the function.";
                                 }
         
@@ -448,17 +467,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                        }
                     },
                     onerror: (e: any) => {
-                        console.error('Gemini Live Error:', e);
-                        const errorMessage = String(e.message || '');
-                    
-                        if (errorMessage.includes('API key not valid')) {
-                            addTranscript('system', 'The configured Gemini API key is invalid.');
-                        } else if (errorMessage.toLowerCase().includes('failed to fetch')) {
-                            addTranscript('system', 'Connection to Gemini failed. This could be a network issue, a browser extension blocking the request, or a temporary service outage. Please check your connection and try again.');
-                        } else {
-                            addTranscript('system', `A connection error occurred: ${errorMessage}. Please check your network. Some browser extensions can also interfere.`);
-                        }
-                        setAgentStatus(AgentStatus.ERROR);
+                        handleApiError(e);
                     },
                     onclose: () => {
                         stopConversation();
@@ -466,11 +475,9 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                 },
             });
         } catch (error) {
-            console.error("An unexpected error occurred during conversation setup:", error);
-            addTranscript('system', 'An unexpected error occurred. Please try again.');
-            setAgentStatus(AgentStatus.ERROR);
+            handleApiError(error);
         }
-    }, [addTranscript, stopConversation, user, setTranscriptHistory, hasInteracted]);
+    }, [addTranscript, stopConversation, user, setTranscriptHistory, hasInteracted, handleApiError]);
     
     const { startListening: startWakeWordListening, stopListening: stopWakeWordListening } = useWakeWord({
         wakeWords: WAKE_WORDS,
