@@ -1,14 +1,12 @@
 
+
 import React, { useState } from 'react';
-import { saveApiKey } from '../utils/apiKeyManager';
+import { useApiKey } from '../contexts/ApiKeyContext';
 
-interface ApiKeyInputProps {
-  onKeySelected: () => void;
-}
-
-const ApiKeyInput: React.FC<ApiKeyInputProps> = ({ onKeySelected }) => {
+const ApiKeyInput: React.FC = () => {
   const [apiKey, setApiKey] = useState('');
   const [error, setError] = useState('');
+  const { setApiKey: setKeyInContext } = useApiKey();
 
   const handleSaveKey = () => {
     if (!apiKey.trim()) {
@@ -16,8 +14,7 @@ const ApiKeyInput: React.FC<ApiKeyInputProps> = ({ onKeySelected }) => {
       return;
     }
     setError('');
-    saveApiKey(apiKey.trim());
-    onKeySelected();
+    setKeyInContext(apiKey.trim());
   };
 
   return (

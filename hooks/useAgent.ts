@@ -1,8 +1,9 @@
 
 
 
+
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
+import { LiveServerMessage, Modality, Blob } from '@google/genai';
 import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
 import { decode, encode, decodeAudioData, playAlarmSound } from '../utils/audio';
 import { isNativePlatform } from '../utils/capacitor';
@@ -12,6 +13,7 @@ import * as notifications from '../services/notifications';
 import { functionDeclarations, createAgentFunctions } from '../services/agentFunctions';
 import { useWakeWord } from './useWakeWord';
 import { useApiKey } from '../contexts/ApiKeyContext';
+import { useGemini } from '../contexts/GeminiContext';
 
 const createBlobFromAudio = (data: Float32Array): Blob => {
     const l = data.length;
@@ -36,6 +38,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
     const [hasInteracted, setHasInteracted] = useState(false);
     const userRef = useRef(user);
     const { resetApiKeyStatus } = useApiKey();
+    const { ai } = useGemini();
 
     const sessionPromiseRef = useRef<Promise<any> | null>(null);
     const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -197,11 +200,15 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         if (!hasInteracted) {
             setHasInteracted(true);
         }
+
+        if (!ai) {
+            handleApiError(new Error("Gemini client is not ready. The API key may be missing or invalid."));
+            return;
+        }
+
         setAgentStatus(AgentStatus.CONNECTING);
         
         // --- Centralized Microphone Access ---
-        // Request microphone access only once when the first conversation starts.
-        // On subsequent starts (e.g., via wake word), reuse the existing stream.
         if (!mediaStreamRef.current || !mediaStreamRef.current.active) {
             try {
                 mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -214,9 +221,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                             const permStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
                             if (permStatus.state === 'denied') {
                                 message = 'Microphone access has been permanently blocked by your browser. You need to go into your browser\'s site settings to allow it.';
-                            } else if (permStatus.state === 'granted') {
-                                message = 'Microphone access is allowed, but the browser blocked the request. This can happen for security reasons if not started by a click. Please try starting the conversation manually first.';
-                            } else { // 'prompt'
+                            } else { 
                                 message = 'Please allow microphone access when prompted by your browser.';
                             }
                         } catch (e) {
@@ -229,7 +234,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                     addTranscript('system', 'Could not access microphone. Please ensure it is connected and enabled.');
                 }
                 setAgentStatus(AgentStatus.ERROR);
-                return; // Stop if we can't get the mic
+                return;
             }
         }
 
@@ -245,7 +250,6 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         addTranscript('system', 'Connecting...');
         
         try {
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             const agentFunctions = createAgentFunctions(ai, user, addTranscript, (updatedUser) => {
                 if (userRef.current) userRef.current = updatedUser;
             });
@@ -477,7 +481,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         } catch (error) {
             handleApiError(error);
         }
-    }, [addTranscript, stopConversation, user, setTranscriptHistory, hasInteracted, handleApiError]);
+    }, [addTranscript, stopConversation, user, setTranscriptHistory, hasInteracted, handleApiError, ai]);
     
     const { startListening: startWakeWordListening, stopListening: stopWakeWordListening } = useWakeWord({
         wakeWords: WAKE_WORDS,

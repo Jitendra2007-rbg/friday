@@ -14,7 +14,9 @@ import { requestNotificationPermission } from './utils/capacitor';
 import SettingsPage from './pages/SettingsPage';
 import './utils/settings'; // Applies theme on initial load
 import { ApiKeyProvider, useApiKey } from './contexts/ApiKeyContext';
+import { GeminiProvider } from './contexts/GeminiContext';
 import SelectApiKeyPage from './pages/SelectApiKeyPage';
+import ApiKeyInput from './pages/ApiKeyInput';
 
 interface AuthContextType {
   session: Session | null;
@@ -97,29 +99,46 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setLoading(true);
+    // Immediately check for the current session to unblock the UI quickly.
+    const checkCurrentSession = async () => {
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            setSession(session);
+            if (session?.user) {
+                const userProfile = await withTimeout(
+                    fetchUserProfile(session.user),
+                    10000, // 10-second timeout
+                    'User profile fetch timed out.'
+                );
+                setUser(userProfile);
+            } else {
+                setUser(null);
+            }
+        } catch (error) {
+            console.error("Error fetching initial session:", error);
+            setUser(null);
+            setSession(null);
+        } finally {
+            setLoading(false);
+        }
+    };
+    checkCurrentSession();
+
+    // Set up the subscription for auth state changes (e.g., login, logout).
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      try {
         setSession(session);
         if (session?.user) {
-            const userProfile = await withTimeout(
-              fetchUserProfile(session.user),
-              10000, // 10-second timeout
-              'Failed to fetch user profile within a reasonable time.'
-            );
+            const userProfile = await fetchUserProfile(session.user);
             setUser(userProfile);
         } else {
             setUser(null);
         }
-      } catch (e) {
-        console.error("Error during auth state change handling:", e);
-        setUser(null); // Clear user state on error
-      } finally {
-        setLoading(false);
-      }
     });
 
     return () => subscription.unsubscribe();
   }, []);
+
 
   const logout = async () => {
     const { error } = await supabase.auth.signOut();
@@ -211,10 +230,10 @@ const AuthManager: React.FC = () => {
 };
 
 const AppContent: React.FC = () => {
-    const { isKeyReady } = useApiKey();
+    const { isKeyReady, isStudioEnv } = useApiKey();
     
     if (!isKeyReady) {
-        return <SelectApiKeyPage />;
+        return isStudioEnv ? <SelectApiKeyPage /> : <ApiKeyInput />;
     }
     
     return (
@@ -232,7 +251,9 @@ const App: React.FC = () => {
 
   return (
     <ApiKeyProvider>
-      <AppContent />
+      <GeminiProvider>
+        <AppContent />
+      </GeminiProvider>
     </ApiKeyProvider>
   );
 };

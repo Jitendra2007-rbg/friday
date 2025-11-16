@@ -1,10 +1,16 @@
 
+
 import React, { createContext, useState, useEffect, useContext, useCallback } from 'react';
+import { getApiKey, saveApiKey, clearApiKey } from '../utils/apiKeyManager';
 
 interface ApiKeyContextType {
+  apiKey: string | null;
   isKeyReady: boolean;
+  isStudioEnv: boolean;
+  setApiKey: (key: string) => void;
+  selectApiKeyInStudio: () => Promise<void>;
   resetApiKeyStatus: () => void;
-  selectApiKey: () => Promise<void>;
+  loading: boolean;
 }
 
 const ApiKeyContext = createContext<ApiKeyContextType | null>(null);
@@ -17,67 +23,57 @@ export const useApiKey = () => {
   return context;
 };
 
-const withTimeout = <T extends unknown>(promise: Promise<T>, ms: number, message: string): Promise<T> => {
-    return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-            reject(new Error(message));
-        }, ms);
-
-        promise
-            .then(value => {
-                clearTimeout(timer);
-                resolve(value);
-            })
-            .catch(reason => {
-                clearTimeout(timer);
-                reject(reason);
-            });
-    });
-};
-
 export const ApiKeyProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [isKeyReady, setIsKeyReady] = useState(false);
-  const [isChecking, setIsChecking] = useState(true);
-
-  const checkKey = useCallback(async () => {
-    setIsChecking(true);
-    if (window.aistudio) {
-        try {
-            const hasKey = await withTimeout(
-                window.aistudio.hasSelectedApiKey(),
-                5000, // 5-second timeout
-                'AI Studio API key check timed out.'
-            );
-            setIsKeyReady(hasKey);
-        } catch (e) {
-            console.error("Error checking for API key:", e);
-            setIsKeyReady(false);
-        }
-    } else {
-        console.warn('AI Studio context not found. API key features will be disabled.');
-        setIsKeyReady(false);
-    }
-    setIsChecking(false);
-  }, []);
+  const [apiKey, setApiKeyState] = useState<string | null>(null);
+  const [isStudioEnv, setIsStudioEnv] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const checkKey = async () => {
+      setLoading(true);
+      if (window.aistudio) {
+        setIsStudioEnv(true);
+        try {
+          const hasKey = await window.aistudio.hasSelectedApiKey();
+          // In studio, the key is in process.env. We just need to know it's ready.
+          setApiKeyState(hasKey ? "STUDIO_KEY_PRESENT" : null);
+        } catch (e) {
+          console.error("Error checking AI Studio key", e);
+          setApiKeyState(null);
+        }
+      } else {
+        setIsStudioEnv(false);
+        const storedKey = getApiKey();
+        setApiKeyState(storedKey);
+      }
+      setLoading(false);
+    };
     checkKey();
-  }, [checkKey]);
-  
-  const selectApiKey = async () => {
+  }, []);
+
+  const setApiKey = useCallback((key: string) => {
+    setApiKeyState(key);
+    if (!isStudioEnv) {
+      saveApiKey(key);
+    }
+  }, [isStudioEnv]);
+
+  const resetApiKeyStatus = useCallback(() => {
+    setApiKeyState(null);
+    if (!isStudioEnv) {
+      clearApiKey();
+    }
+  }, [isStudioEnv]);
+
+  const selectApiKeyInStudio = async () => {
     if (window.aistudio) {
-        await window.aistudio.openSelectKey();
-        setIsKeyReady(true);
+      await window.aistudio.openSelectKey();
+      const hasKey = await window.aistudio.hasSelectedApiKey();
+      setApiKeyState(hasKey ? "STUDIO_KEY_PRESENT" : null);
     }
   };
 
-  const resetApiKeyStatus = useCallback(() => {
-    setIsKeyReady(false);
-  }, []);
-
-  const value = { isKeyReady, resetApiKeyStatus, selectApiKey };
-  
-  if (isChecking) {
+  if (loading) {
     return (
       <div className="h-full flex items-center justify-center" style={{backgroundColor: 'var(--bg-primary)'}}>
         <svg className="animate-spin h-10 w-10 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -87,6 +83,8 @@ export const ApiKeyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       </div>
     );
   }
+  
+  const value = { apiKey, isKeyReady: !!apiKey, isStudioEnv, setApiKey, selectApiKeyInStudio, resetApiKeyStatus, loading };
 
   return (
     <ApiKeyContext.Provider value={value}>

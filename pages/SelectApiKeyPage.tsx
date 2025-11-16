@@ -1,9 +1,10 @@
 
+
 import React from 'react';
 import { useApiKey } from '../contexts/ApiKeyContext';
 
 const SelectApiKeyPage: React.FC = () => {
-  const { selectApiKey } = useApiKey();
+  const { selectApiKeyInStudio } = useApiKey();
 
   return (
     <div className="flex flex-col items-center justify-center h-full p-4 text-center" style={{backgroundColor: 'var(--bg-primary)'}}>
@@ -15,7 +16,7 @@ const SelectApiKeyPage: React.FC = () => {
         </p>
 
         <button
-          onClick={selectApiKey}
+          onClick={selectApiKeyInStudio}
           className="w-full font-bold py-3 px-4 rounded-lg transition-colors text-white bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)]"
         >
           Select API Key

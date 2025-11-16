@@ -1,13 +1,15 @@
 
 
 
+
 import React, { useState, useEffect } from 'react';
-import { GoogleGenAI, Modality } from '@google/genai';
+import { Modality } from '@google/genai';
 import { BackIcon, CogIcon, PaintBrushIcon, BellIcon, SpeakerWaveIcon, CheckIcon } from '../components/Icons';
 import { getSettings, saveSettings } from '../utils/settings';
 import { User } from '../types';
 import { decode, decodeAudioData } from '../utils/audio';
 import { useApiKey } from '../contexts/ApiKeyContext';
+import { useGemini } from '../contexts/GeminiContext';
 
 interface SettingsPageProps {
   navigate: (page: string) => void;
@@ -34,6 +36,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) =
   const [isSaving, setIsSaving] = useState(false);
   const [isPlaying, setIsPlaying] = useState<string | null>(null);
   const { resetApiKeyStatus } = useApiKey();
+  const { ai } = useGemini();
 
   const handleSettingChange = (key: keyof typeof settings, value: any) => {
     setSettings(prev => ({ ...prev, [key]: value }));
@@ -55,11 +58,10 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) =
   };
 
   const playVoiceSample = async (voiceName: string) => {
-    if (!user || isPlaying) return;
+    if (!user || isPlaying || !ai) return;
 
     setIsPlaying(voiceName);
     try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash-preview-tts",
             contents: [{ parts: [{ text: 'Hello, this is my voice.' }] }],
@@ -143,7 +145,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) =
                             <p className="text-sm mb-3" style={{color: 'var(--text-muted)'}}>{voice.description}</p>
                             <button 
                                 onClick={(e) => { e.stopPropagation(); playVoiceSample(voice.id); }} 
-                                disabled={!!isPlaying} 
+                                disabled={!!isPlaying || !ai} 
                                 className="p-3 rounded-full disabled:opacity-50 transition-colors hover:bg-gray-600" style={{backgroundColor: 'var(--bg-interactive)'}}>
                                 <SpeakerWaveIcon className={`w-6 h-6 ${isPlaying === voice.id ? 'animate-pulse text-green-400' : ''}`}/>
                             </button>
