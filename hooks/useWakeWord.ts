@@ -36,11 +36,12 @@ export const useWakeWord = ({ wakeWords, onWakeWord, onError }: UseWakeWordProps
 
         recognition.onresult = (event: any) => {
             for (let i = event.resultIndex; i < event.results.length; ++i) {
-                if (event.results[i].isFinal) {
-                    const transcript = event.results[i][0].transcript.trim().toLowerCase();
-                    if (wakeWords.some(word => transcript.includes(word))) {
-                        onWakeWord();
-                    }
+                const transcript = event.results[i][0].transcript.trim().toLowerCase();
+                if (wakeWords.some(word => transcript.includes(word))) {
+                    onWakeWord();
+                    // Once wake word is detected, we don't need to process more results.
+                    // The `onWakeWord` callback will handle stopping this listener.
+                    return;
                 }
             }
         };
