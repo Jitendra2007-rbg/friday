@@ -24,6 +24,24 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+const withTimeout = <T extends unknown>(promise: Promise<T>, ms: number, message: string): Promise<T> => {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error(message));
+        }, ms);
+
+        promise
+            .then(value => {
+                clearTimeout(timer);
+                resolve(value);
+            })
+            .catch(reason => {
+                clearTimeout(timer);
+                reject(reason);
+            });
+    });
+};
+
 const fetchUserProfile = async (sessionUser: SupabaseUser): Promise<User | null> => {
   // The user's dynamic profile (name, interests, etc.) is stored in user_metadata.
   const profileData = sessionUser.user_metadata?.profileData || {};
@@ -83,7 +101,11 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       try {
         setSession(session);
         if (session?.user) {
-            const userProfile = await fetchUserProfile(session.user);
+            const userProfile = await withTimeout(
+              fetchUserProfile(session.user),
+              10000, // 10-second timeout
+              'Failed to fetch user profile within a reasonable time.'
+            );
             setUser(userProfile);
         } else {
             setUser(null);

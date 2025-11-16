@@ -17,6 +17,24 @@ export const useApiKey = () => {
   return context;
 };
 
+const withTimeout = <T extends unknown>(promise: Promise<T>, ms: number, message: string): Promise<T> => {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error(message));
+        }, ms);
+
+        promise
+            .then(value => {
+                clearTimeout(timer);
+                resolve(value);
+            })
+            .catch(reason => {
+                clearTimeout(timer);
+                reject(reason);
+            });
+    });
+};
+
 export const ApiKeyProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isKeyReady, setIsKeyReady] = useState(false);
   const [isChecking, setIsChecking] = useState(true);
@@ -25,7 +43,11 @@ export const ApiKeyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setIsChecking(true);
     if (window.aistudio) {
         try {
-            const hasKey = await window.aistudio.hasSelectedApiKey();
+            const hasKey = await withTimeout(
+                window.aistudio.hasSelectedApiKey(),
+                5000, // 5-second timeout
+                'AI Studio API key check timed out.'
+            );
             setIsKeyReady(hasKey);
         } catch (e) {
             console.error("Error checking for API key:", e);
@@ -33,8 +55,6 @@ export const ApiKeyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
     } else {
         console.warn('AI Studio context not found. API key features will be disabled.');
-        // In a non-AI Studio environment, we can't prompt for a key this way.
-        // The error indicates the key isn't set via process.env either, so we default to false.
         setIsKeyReady(false);
     }
     setIsChecking(false);
@@ -47,8 +67,6 @@ export const ApiKeyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const selectApiKey = async () => {
     if (window.aistudio) {
         await window.aistudio.openSelectKey();
-        // Optimistically set to true. The app will fail if it's not actually set,
-        // and the error handling in API calls will catch it and reset this state.
         setIsKeyReady(true);
     }
   };
