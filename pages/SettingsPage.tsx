@@ -20,11 +20,11 @@ const themes = [
 ];
 
 const voices = [
-    { id: 'Zephyr', name: 'Zephyr (Friendly)' },
-    { id: 'Puck', name: 'Puck (Playful)' },
-    { id: 'Charon', name: 'Charon (Deep)' },
-    { id: 'Kore', name: 'Kore (Warm)' },
-    { id: 'Fenrir', name: 'Fenrir (Assertive)' },
+    { id: 'Zephyr', name: 'Zephyr', description: 'Clear & Friendly' },
+    { id: 'Puck', name: 'Puck', description: 'Upbeat & Playful' },
+    { id: 'Charon', name: 'Charon', description: 'Deep & Authoritative' },
+    { id: 'Kore', name: 'Kore', description: 'Warm & Trustworthy' },
+    { id: 'Fenrir', name: 'Fenrir', description: 'Strong & Assertive' },
 ];
 
 const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) => {
@@ -131,12 +131,16 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) =
             {/* Voice Selection */}
             <div>
                 <h2 className="text-lg font-semibold flex items-center gap-2 mb-2" style={{color: 'var(--text-secondary)'}}><SpeakerWaveIcon className="w-5 h-5" /> Agent Voice</h2>
-                <div className="space-y-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                      {voices.map(voice => (
-                        <div key={voice.id} onClick={() => handleSettingChange('voice', voice.id)} className={`p-3 rounded-lg flex items-center justify-between cursor-pointer border-2 transition-all ${settings.voice === voice.id ? 'border-blue-500 ring-2 ring-blue-500' : 'border-transparent'}`} style={{backgroundColor: `var(--bg-tertiary)`}}>
-                            <span>{voice.name}</span>
-                            <button onClick={(e) => { e.stopPropagation(); playVoiceSample(voice.id); }} disabled={!!isPlaying} className="p-2 rounded-full disabled:opacity-50" style={{backgroundColor: 'var(--bg-interactive)'}}>
-                                <SpeakerWaveIcon className={`w-5 h-5 ${isPlaying === voice.id ? 'animate-pulse' : ''}`}/>
+                        <div key={voice.id} onClick={() => handleSettingChange('voice', voice.id)} className={`p-4 rounded-lg border-2 transition-all cursor-pointer flex flex-col items-center justify-center text-center ${settings.voice === voice.id ? 'border-blue-500 ring-2 ring-blue-500' : 'border-transparent'}`} style={{backgroundColor: 'var(--bg-tertiary)'}}>
+                            <h3 className="font-semibold text-lg">{voice.name}</h3>
+                            <p className="text-sm mb-3" style={{color: 'var(--text-muted)'}}>{voice.description}</p>
+                            <button 
+                                onClick={(e) => { e.stopPropagation(); playVoiceSample(voice.id); }} 
+                                disabled={!!isPlaying} 
+                                className="p-3 rounded-full disabled:opacity-50 transition-colors hover:bg-gray-600" style={{backgroundColor: 'var(--bg-interactive)'}}>
+                                <SpeakerWaveIcon className={`w-6 h-6 ${isPlaying === voice.id ? 'animate-pulse text-green-400' : ''}`}/>
                             </button>
                         </div>
                     ))}

@@ -40,6 +40,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
     const outputAudioContextRef = useRef<AudioContext | null>(null);
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
     const pendingImageRef = useRef<string | null>(null);
+    const turnInterruptedRef = useRef(false);
 
     const WAKE_WORDS = user ? [`hey ${user.agentName.toLowerCase()}`, user.agentName.toLowerCase()] : ['hey friday'];
 
@@ -154,14 +155,19 @@ export const useAgent = ({ user }: { user: User | null; }) => {
     const stopConversation = useCallback(() => {
         if (agentStatus === AgentStatus.IDLE && !sessionPromiseRef.current) return;
         
-        // Disconnect the audio processor from the Gemini session, but DO NOT stop the media stream.
-        // The stream needs to stay active for the wake word listener.
         scriptProcessorRef.current?.disconnect();
         sessionPromiseRef.current?.then(session => session.close()).catch(console.error);
 
         scriptProcessorRef.current = null;
         sessionPromiseRef.current = null;
         pendingImageRef.current = null;
+
+        // Stop any currently playing audio from the agent.
+        for (const source of audioSources.current.values()) {
+            source.stop();
+        }
+        audioSources.current.clear();
+        nextStartTime.current = 0;
 
         if (agentStatus !== AgentStatus.ERROR) {
              addTranscript('system', `Session ended. Say "Hey ${user?.agentName || 'Friday'}" to start again.`);
@@ -173,6 +179,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         if (!hasInteracted) {
             setHasInteracted(true);
         }
+        setAgentStatus(AgentStatus.CONNECTING);
         
         // --- Centralized Microphone Access ---
         // Request microphone access only once when the first conversation starts.
@@ -216,9 +223,8 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         }
         
         stopWakeWordListening(); // Stop listening for wake word
-        setAgentStatus(AgentStatus.LISTENING);
         setTranscriptHistory([]);
-        addTranscript('system', 'Listening...');
+        addTranscript('system', 'Connecting...');
         
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const agentFunctions = createAgentFunctions(ai, user, addTranscript, (updatedUser) => {
@@ -242,13 +248,16 @@ export const useAgent = ({ user }: { user: User | null; }) => {
             }
 
             nextStartTime.current = 0;
+            turnInterruptedRef.current = false;
             
             const settings = getSettings();
             
             const systemInstruction = `You are a helpful and conversational voice assistant named ${user.agentName}.
 
+            **Activation & Greeting:**
+            - When you receive the command '[SYSTEM_GREET]', your first and only action MUST be to provide a warm, friendly greeting to the user. Do not wait for them to speak first. If you know their name from the profile data provided below, use it.
+
             **Core Persona & Behavior:**
-            - Your first response in any new conversation MUST be a warm, friendly greeting. If you know the user's name, greet them by name. Otherwise, a general greeting like 'Hey there, how can I help you?' is perfect. Do not wait for the user to speak first; greet them immediately after activation.
             - You MUST operate on Indian Standard Time (IST). When asked for the time or date, provide it in IST. The current date is ${new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}.
             - Your session should remain active for a long conversation. Do not close the session unless the user says goodbye or is inactive.
             - You can process images sent by the user. If an image is provided, your next response should relate to it.
@@ -271,7 +280,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
             **Functions & Creativity:**
             - You can open websites, launch native mobile apps, schedule events, and set alarms. When scheduling or setting alarms, always confirm the action and time.
             - You can generate images from text descriptions. Use the 'generateImage' function when a user asks you to create, draw, or show them a picture of something.
-            - When a user asks you to find a product (e.g., shoes, gadgets), use the 'searchProducts' function. Mention that you'll look on stores like Amazon, Nike, or Flipkart. The function will return product information and you MUST show the user the images and details. Your spoken response should summarize what you found.
+            - You can search for products (e.g., shoes, gadgets), use the 'searchProducts' function. Mention that you'll look on stores like Amazon, Nike, or Flipkart. The function will return product information and you MUST show the user the images and details. Your spoken response should summarize what you found.
             - You MUST speak and respond ONLY in English. Do not use any other languages like Telugu, Malayalam, or Tamil, regardless of the user's input language.`;
 
             sessionPromiseRef.current = ai.live.connect({
@@ -286,8 +295,19 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                 },
                 callbacks: {
                     onopen: () => {
+                        setAgentStatus(AgentStatus.LISTENING);
+                        setTranscriptHistory(prev => {
+                            const updatedHistory = [...prev];
+                            const lastIndex = updatedHistory.length - 1;
+                            if (lastIndex >= 0 && updatedHistory[lastIndex].speaker === 'system' && updatedHistory[lastIndex].text === 'Connecting...') {
+                                updatedHistory[lastIndex].text = 'Listening...';
+                                return updatedHistory;
+                            }
+                            return prev;
+                        });
+
                         sessionPromiseRef.current?.then((session) => {
-                            session.sendRealtimeInput({ text: "[SYSTEM: User has just activated you. Please provide your initial greeting now.]" });
+                           session.sendRealtimeInput({ text: "[SYSTEM_GREET]" });
                         });
 
                         const source = inputAudioContextRef.current!.createMediaStreamSource(mediaStreamRef.current!);
@@ -313,6 +333,15 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                     onmessage: async (message: LiveServerMessage) => {
                         const currentOutputAudioContext = outputAudioContextRef.current;
                         if (!currentOutputAudioContext) return;
+
+                        if (message.serverContent?.interrupted) {
+                            turnInterruptedRef.current = true;
+                            for (const source of audioSources.current.values()) { source.stop(); }
+                            audioSources.current.clear();
+                            nextStartTime.current = 0;
+                            currentOutputTranscription.current = '';
+                            setAgentStatus(AgentStatus.LISTENING);
+                        }
 
                        if (message.serverContent?.inputTranscription) {
                             const text = message.serverContent.inputTranscription.text;
@@ -341,10 +370,13 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                             currentInputTranscription.current = '';
                             currentOutputTranscription.current = '';
                             setAgentStatus(AgentStatus.LISTENING);
+                            turnInterruptedRef.current = false;
                        }
 
                        if (message.toolCall) {
                             setAgentStatus(AgentStatus.THINKING);
+                            turnInterruptedRef.current = false; // New turn with a tool call.
+
                             for (const fc of message.toolCall.functionCalls) {
                                 let result: string | undefined;
                                 try {
@@ -391,6 +423,12 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                                     result = error instanceof Error ? error.message : "An unknown error occurred while executing the function.";
                                 }
         
+                                // Check for interruption *after* the async agent function has completed.
+                                if (turnInterruptedRef.current) {
+                                    console.log('Conversation was interrupted during tool execution. Aborting tool response.');
+                                    break; 
+                                }
+
                                 sessionPromiseRef.current?.then((session) => {
                                     session.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: { result } } });
                                 });
@@ -408,11 +446,6 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                             nextStartTime.current += audioBuffer.duration;
                             audioSources.current.add(source);
                        }
-                       if (message.serverContent?.interrupted) {
-                          for (const source of audioSources.current.values()) { source.stop(); }
-                          audioSources.current.clear();
-                          nextStartTime.current = 0;
-                       }
                     },
                     onerror: (e: any) => {
                         console.error('Gemini Live Error:', e);
@@ -420,25 +453,19 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                     
                         if (errorMessage.includes('API key not valid')) {
                             addTranscript('system', 'The configured Gemini API key is invalid.');
-                            setAgentStatus(AgentStatus.ERROR);
                         } else if (errorMessage.toLowerCase().includes('failed to fetch')) {
                             addTranscript('system', 'Connection to Gemini failed. This could be a network issue, a browser extension blocking the request, or a temporary service outage. Please check your connection and try again.');
-                            setAgentStatus(AgentStatus.ERROR);
                         } else {
                             addTranscript('system', `A connection error occurred: ${errorMessage}. Please check your network. Some browser extensions can also interfere.`);
-                            setAgentStatus(AgentStatus.ERROR);
                         }
+                        setAgentStatus(AgentStatus.ERROR);
                     },
                     onclose: () => {
-                        // The conversation is stopped server-side or due to an error.
-                        // We reflect this state change, which will then trigger the wake word listener.
                         stopConversation();
                     },
                 },
             });
         } catch (error) {
-            // This top-level catch is for unexpected errors during the setup phase,
-            // as microphone permissions are now handled before this block.
             console.error("An unexpected error occurred during conversation setup:", error);
             addTranscript('system', 'An unexpected error occurred. Please try again.');
             setAgentStatus(AgentStatus.ERROR);
@@ -470,8 +497,6 @@ export const useAgent = ({ user }: { user: User | null; }) => {
 
     useEffect(() => {
         return () => {
-            // This is the final cleanup when the component unmounts.
-            // This is where we release the microphone completely.
             mediaStreamRef.current?.getTracks().forEach(track => track.stop());
             if (scriptProcessorRef.current) {
                 scriptProcessorRef.current.disconnect();

@@ -2,6 +2,7 @@
 
 export enum AgentStatus {
   IDLE = 'idle',
+  CONNECTING = 'connecting',
   LISTENING = 'listening',
   THINKING = 'thinking',
   SPEAKING = 'speaking',

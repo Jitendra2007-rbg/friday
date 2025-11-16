@@ -10,6 +10,8 @@ interface AgentAvatarProps {
 const AgentAvatar: React.FC<AgentAvatarProps> = ({ status }) => {
   const getStatusClasses = () => {
     switch (status) {
+      case AgentStatus.CONNECTING:
+        return 'border-yellow-500 animate-pulse';
       case AgentStatus.LISTENING:
         return 'border-blue-500 animate-pulse';
       case AgentStatus.THINKING:
