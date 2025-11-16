@@ -1,4 +1,5 @@
 
+
 export enum AgentStatus {
   IDLE = 'idle',
   LISTENING = 'listening',
@@ -40,7 +41,6 @@ export interface UserSettings {
 
 // Add global types here to avoid polluting other files
 declare global {
-  // FIX: Defined the AIStudio interface and used it for window.aistudio to resolve a type conflict.
   interface AIStudio {
     hasSelectedApiKey: () => Promise<boolean>;
     openSelectKey: () => Promise<void>;
@@ -52,7 +52,7 @@ declare global {
 
     webkitAudioContext: typeof AudioContext;
 
-    // FIX: Added the `readonly` modifier back to resolve a declaration conflict for `aistudio`.
-    readonly aistudio: AIStudio;
+    // FIX: Made aistudio optional to resolve declaration conflict error.
+    aistudio?: AIStudio;
   }
 }

@@ -16,6 +16,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
     const [transcriptHistory, setTranscriptHistory] = useState<TranscriptEntry[]>([]);
     const [events, setEvents] = useState<CalendarEvent[]>([]);
     const [alarms, setAlarms] = useState<Alarm[]>([]);
+    const [hasInteracted, setHasInteracted] = useState(false);
     const userRef = useRef(user);
 
     const sessionPromiseRef = useRef<Promise<any> | null>(null);
@@ -158,25 +159,23 @@ export const useAgent = ({ user }: { user: User | null; }) => {
     }, [addTranscript, agentStatus, user]);
 
     const startConversation = useCallback(async () => {
+        if (!hasInteracted) {
+            setHasInteracted(true);
+        }
+
         if (!user) {
             addTranscript('system', 'User not logged in. Conversation cannot start.');
             setAgentStatus(AgentStatus.ERROR);
             return;
         }
         
-        const apiKey = process.env.API_KEY;
-        if (!apiKey) {
-            addTranscript('system', 'Gemini API key is not configured for this application. The agent cannot function.');
-            setAgentStatus(AgentStatus.ERROR);
-            return;
-        }
-
+        // FIX: Use `process.env.API_KEY` directly and remove API key checks, per guidelines.
         stopWakeWordListening(); // Stop listening for wake word
         setAgentStatus(AgentStatus.LISTENING);
         setTranscriptHistory([]);
         addTranscript('system', 'Listening...');
         
-        const ai = new GoogleGenAI({ apiKey });
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const agentFunctions = createAgentFunctions(ai, user, addTranscript, (updatedUser) => {
             if (userRef.current) userRef.current = updatedUser;
         });
@@ -383,10 +382,14 @@ export const useAgent = ({ user }: { user: User | null; }) => {
             });
         } catch (error) {
             console.error("Failed to start conversation:", error);
-            addTranscript('system', 'Could not access microphone.');
+            if (error instanceof Error && error.name === 'NotAllowedError') {
+                addTranscript('system', 'Microphone access was denied. Please allow microphone access in your browser settings to use the voice features.');
+            } else {
+                addTranscript('system', 'Could not access microphone. Please ensure it is connected and enabled.');
+            }
             setAgentStatus(AgentStatus.ERROR);
         }
-    }, [addTranscript, stopConversation, user, setTranscriptHistory]);
+    }, [addTranscript, stopConversation, user, setTranscriptHistory, hasInteracted]);
     
     const { startListening: startWakeWordListening, stopListening: stopWakeWordListening } = useWakeWord({
         wakeWords: WAKE_WORDS,
@@ -395,19 +398,21 @@ export const useAgent = ({ user }: { user: User | null; }) => {
     });
 
     useEffect(() => {
-        if (agentStatus === AgentStatus.IDLE) {
+        if (agentStatus === AgentStatus.IDLE && hasInteracted) {
             startWakeWordListening();
         } else {
             stopWakeWordListening();
         }
-    }, [agentStatus, startWakeWordListening, stopWakeWordListening]);
+    }, [agentStatus, startWakeWordListening, stopWakeWordListening, hasInteracted]);
 
     useEffect(() => {
-        if (user) {
+        if (user && hasInteracted) {
             addTranscript('system', `Say "Hey ${user.agentName}" or just "${user.agentName}" to activate the assistant.`);
+        } else if (user && !hasInteracted) {
+            addTranscript('system', `Click "Start Manually" to begin the conversation.`);
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [user]);
+    }, [user, hasInteracted]);
 
     useEffect(() => {
         return () => {

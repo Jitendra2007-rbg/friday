@@ -53,16 +53,11 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ navigate, logout, user }) =
 
   const playVoiceSample = async (voiceName: string) => {
     if (!user || isPlaying) return;
-    
-    const apiKey = process.env.API_KEY;
-    if (!apiKey) {
-      alert("Cannot play voice sample, API key is not configured for this application.");
-      return;
-    }
 
+    // FIX: Remove API key check and use `process.env.API_KEY` directly per guidelines.
     setIsPlaying(voiceName);
     try {
-        const ai = new GoogleGenAI({ apiKey });
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({
             model: "gemini-2.5-flash-preview-tts",
             contents: [{ parts: [{ text: 'Hello, this is my voice.' }] }],

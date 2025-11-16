@@ -72,15 +72,18 @@ export const createAgentFunctions = (
 
     const launchApp = async (appName: string): Promise<string> => {
         addTranscript('system', `User wants to launch app: ${appName}.`);
-        if (!isNativePlatform()) {
-            return `As a web-based assistant, I am running in a browser and cannot launch native desktop or mobile applications. I can open any website for you if you provide the URL.`;
+        const isAndroidBrowser = /android/i.test(navigator.userAgent);
+
+        if (!isNativePlatform() && !isAndroidBrowser) {
+            return `As a web-based assistant, I can only launch apps on native mobile devices or Android. I can open any website for you if you provide the URL.`;
         }
+
         const result = await launchAppByUrl(appName);
         if (result.success) {
             return result.message;
         } else {
             if (result.fallbackUrl) {
-                addTranscript('system', `App not found, opening website: ${result.fallbackUrl}`);
+                addTranscript('system', `App launch failed, opening website: ${result.fallbackUrl}`);
                 const openWebsiteResult = openWebsite(result.fallbackUrl);
                 return `${result.message} Opening its website instead. ${openWebsiteResult}`;
             }
