@@ -5,7 +5,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { LiveServerMessage, Modality, Blob } from '@google/genai';
 import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
-import { decode, encode, decodeAudioData, playAlarmSound } from '../utils/audio';
+import { decode, encode, decodeAudioData, playAlarmSound, playActivationSound } from '../utils/audio';
 import { isNativePlatform } from '../utils/capacitor';
 import { getSettings } from '../utils/settings';
 import * as db from '../services/database';
@@ -200,6 +200,9 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         if (!hasInteracted) {
             setHasInteracted(true);
         }
+        
+        // Play activation sound for immediate user feedback
+        playActivationSound();
 
         if (!ai) {
             handleApiError(new Error("Gemini client is not ready. The API key may be missing or invalid."));

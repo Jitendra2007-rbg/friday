@@ -1,4 +1,5 @@
 
+
 export const decode = (base64: string): Uint8Array => {
   const binaryString = atob(base64);
   const len = binaryString.length;
@@ -62,4 +63,30 @@ export const playAlarmSound = () => {
 
   oscillator.start();
   oscillator.stop(time);
+};
+
+export const playActivationSound = () => {
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(console.error);
+  }
+  const oscillator = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  oscillator.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+
+  gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+  gainNode.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + 0.01);
+
+  oscillator.type = 'sine';
+  oscillator.frequency.setValueAtTime(600, audioCtx.currentTime);
+  oscillator.frequency.exponentialRampToValueAtTime(900, audioCtx.currentTime + 0.1);
+  
+  gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.15);
+  oscillator.start(audioCtx.currentTime);
+  oscillator.stop(audioCtx.currentTime + 0.15);
+  
+  oscillator.onended = () => {
+    audioCtx.close().catch(console.error);
+  };
 };
