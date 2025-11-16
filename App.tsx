@@ -1,5 +1,6 @@
 
 
+
 import React, { useState, useEffect, createContext, useContext } from 'react';
 import AgentInterface from './pages/AgentInterface';
 import EventsPage from './pages/EventsPage';
@@ -51,7 +52,7 @@ const fetchUserProfile = async (sessionUser: SupabaseUser): Promise<User | null>
   // Core agent config is stored in the public users table.
   const { data: userData, error } = await supabase
     .from('users')
-    .select('agent_name')
+    .select('agent_name, api_key')
     .eq('id', sessionUser.id)
     .maybeSingle();
 
@@ -65,6 +66,7 @@ const fetchUserProfile = async (sessionUser: SupabaseUser): Promise<User | null>
       id: sessionUser.id,
       email: sessionUser.email,
       agentName: userData.agent_name || 'Friday',
+      apiKey: userData.api_key,
       profileData: profileData,
     };
   }
@@ -77,6 +79,7 @@ const fetchUserProfile = async (sessionUser: SupabaseUser): Promise<User | null>
       id: sessionUser.id,
       email: sessionUser.email,
       agentName: user_metadata.agent_name,
+      apiKey: user_metadata.api_key,
       profileData: profileData,
     };
   }
@@ -88,6 +91,7 @@ const fetchUserProfile = async (sessionUser: SupabaseUser): Promise<User | null>
       id: sessionUser.id,
       email: sessionUser.email,
       agentName: 'Friday', // default
+      apiKey: undefined,
       profileData: {},
     };
 };
@@ -97,6 +101,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const { setApiKey, resetApiKeyStatus, isStudioEnv } = useApiKey();
 
   useEffect(() => {
     setLoading(true);
@@ -112,13 +117,18 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
                     'User profile fetch timed out.'
                 );
                 setUser(userProfile);
+                if (!isStudioEnv && userProfile?.apiKey) {
+                    setApiKey(userProfile.apiKey);
+                }
             } else {
                 setUser(null);
+                if (!isStudioEnv) resetApiKeyStatus();
             }
         } catch (error) {
             console.error("Error fetching initial session:", error);
             setUser(null);
             setSession(null);
+            if (!isStudioEnv) resetApiKeyStatus();
         } finally {
             setLoading(false);
         }
@@ -131,13 +141,17 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         if (session?.user) {
             const userProfile = await fetchUserProfile(session.user);
             setUser(userProfile);
+            if (!isStudioEnv && userProfile?.apiKey) {
+                setApiKey(userProfile.apiKey);
+            }
         } else {
             setUser(null);
+            if (!isStudioEnv) resetApiKeyStatus();
         }
     });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [setApiKey, resetApiKeyStatus, isStudioEnv]);
 
 
   const logout = async () => {
@@ -146,7 +160,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       console.error("Error logging out:", error);
       alert(`Logout failed: ${error.message}`);
     }
-    // The onAuthStateChange listener will automatically update session and user state.
+    // The onAuthStateChange listener will automatically update session and user state, and reset API key.
   };
 
   if (loading) {
@@ -226,14 +240,17 @@ const AuthManager: React.FC = () => {
             : <SignupPage onSwitchToLogin={() => setAuthRoute('login')} />;
     }
     
+    // For existing users who don't have an API key stored.
+    // They will be prompted by the "Gemini client is not ready" message if they try to start a conversation.
+    // A future improvement could be a dedicated page to update their key.
     return <MainApp />;
 };
 
 const AppContent: React.FC = () => {
     const { isKeyReady, isStudioEnv } = useApiKey();
     
-    if (!isKeyReady) {
-        return isStudioEnv ? <SelectApiKeyPage /> : <ApiKeyInput />;
+    if (isStudioEnv && !isKeyReady) {
+        return <SelectApiKeyPage />;
     }
     
     return (

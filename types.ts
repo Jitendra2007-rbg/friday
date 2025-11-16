@@ -32,6 +32,7 @@ export interface User {
   email: string | undefined;
   agentName: string;
   profileData?: { [key: string]: any };
+  apiKey?: string;
 }
 
 export interface UserSettings {
