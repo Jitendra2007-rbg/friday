@@ -24,6 +24,22 @@ export const requestNotificationPermission = async () => {
   }
 };
 
+export const sendWebNotification = (title: string, options?: NotificationOptions) => {
+  // Safety check for non-native platforms (web)
+  if (isNativePlatform()) return;
+
+  if (!("Notification" in window) || Notification.permission !== "granted") {
+    return;
+  }
+
+  try {
+    // This can throw "Illegal constructor" on Android Chrome if not inside a ServiceWorker
+    new Notification(title, options);
+  } catch (e) {
+    console.warn("Failed to construct Web Notification (likely Android restriction):", e);
+  }
+};
+
 export const scheduleNativeNotification = async (notification: { id: number, title: string, body: string, scheduleAt: Date }) => {
   if (!isNativePlatform()) return;
 

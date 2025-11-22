@@ -1,5 +1,4 @@
 
-
 import React from 'react';
 import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
 import AgentAvatar from '../components/AgentAvatar';
@@ -14,6 +13,7 @@ interface AgentInterfaceProps {
     startConversation: () => void;
     stopConversation: () => void;
     setPendingImage: (base64: string | null) => void;
+    isWakeWordListening?: boolean;
   };
   navigate: (page: string) => void;
   user: User;
@@ -28,6 +28,7 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user }
     startConversation,
     stopConversation,
     setPendingImage,
+    isWakeWordListening
   } = agent;
 
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -37,11 +38,9 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user }
   const isConversationActive = agentStatus !== AgentStatus.IDLE;
 
   const createMarkup = (text: string) => {
-    // Already HTML (e.g., from system sources with links)
     if (text.trim().startsWith('<div')) {
       return { __html: text };
     }
-    // Add links to plain text
     const urlRegex = /(https?:\/\/[^\s]+)/g;
     const textWithLinks = text.replace(
       urlRegex,
@@ -77,7 +76,6 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user }
 
   return (
     <div className="flex flex-col items-center justify-center p-4 font-sans h-full relative">
-      {/* Image Viewer Modal */}
       {viewingImage && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={() => setViewingImage(null)}>
             <div className="relative" onClick={(e) => e.stopPropagation()}>
@@ -101,7 +99,6 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user }
         </div>
       )}
 
-      {/* Mobile Menu */}
       <div className="absolute top-4 left-4 z-20 md:hidden">
           <button onClick={() => setIsMenuOpen(true)} className="p-2 rounded-full hover:bg-gray-700/50 transition-colors">
               <MenuIcon className="w-8 h-8 text-white" />
@@ -116,7 +113,6 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user }
       </div>
       {isMenuOpen && <div onClick={() => setIsMenuOpen(false)} className="fixed inset-0 bg-black/60 z-20 md:hidden" />}
 
-
       <div className="absolute top-4 right-4 z-10">
          <button onClick={() => navigate('settings')} className="text-right hover:bg-gray-700/50 p-2 rounded-lg transition-colors">
             <p className="font-semibold" style={{color: 'var(--text-secondary)'}}>{user.email}</p>
@@ -129,14 +125,27 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user }
         <div className="flex flex-col items-center justify-center md:w-1/3">
           <AgentAvatar status={agentStatus} />
           <p className="mt-4 text-lg capitalize" style={{color: 'var(--text-muted)'}}>{agentStatus}</p>
+          
+          {/* Wake Word Indicator */}
+          {agentStatus === AgentStatus.IDLE && isWakeWordListening && (
+            <div className="mt-2 flex items-center gap-2 text-sm animate-pulse" style={{color: 'var(--accent-primary)'}}>
+              <div className="w-2 h-2 rounded-full bg-green-500"></div>
+              Listening for "Hey {user.agentName}"...
+            </div>
+          )}
+          
+          {agentStatus === AgentStatus.IDLE && !isWakeWordListening && (
+            <div className="mt-2 text-sm text-yellow-500">
+               Microphone paused
+            </div>
+          )}
+
           {isConversationActive && agentStatus !== AgentStatus.ERROR &&
-            // Fix: Replaced inline style with `onMouseOver` with Tailwind CSS classes for hover effect.
             <button onClick={() => stopConversation()} className="mt-4 text-white font-bold py-2 px-4 rounded-full transition-colors bg-[var(--danger-primary)] hover:bg-[var(--danger-primary-hover)]">
               End Session
             </button>
           }
           {!isConversationActive &&
-            // Fix: Replaced inline style with `onMouseOver` with Tailwind CSS classes for hover effect.
             <button onClick={startConversation} className="mt-4 text-white font-bold py-2 px-4 rounded-full transition-colors bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)]">
              Start Manually
             </button>
@@ -165,7 +174,6 @@ const AgentInterface: React.FC<AgentInterfaceProps> = ({ agent, navigate, user }
                     }
                   }
 
-                  // Handle agent-generated images with modal viewer
                   if (entry.speaker === 'agent' && entry.text.trim().startsWith('<img')) {
                       const srcMatch = entry.text.match(/src="([^"]*)"/);
                       const altMatch = entry.text.match(/alt="([^"]*)"/);

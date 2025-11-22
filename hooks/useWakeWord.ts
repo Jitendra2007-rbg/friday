@@ -9,108 +9,130 @@ interface UseWakeWordProps {
 
 // Escapes special characters in a string for use in a regular expression.
 const escapeRegExp = (string: string) => {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); 
 };
 
 export const useWakeWord = ({ wakeWords, onWakeWord, onError }: UseWakeWordProps) => {
     const recognitionRef = useRef<any>(null);
     const [isListening, setIsListening] = useState(false);
     const isStoppingRef = useRef(false);
+    const wakeWordsRef = useRef(wakeWords);
+    const restartTimeoutRef = useRef<number | null>(null);
+    
+    useEffect(() => {
+        wakeWordsRef.current = wakeWords;
+    }, [wakeWords]);
 
     const stopListening = useCallback(() => {
+        isStoppingRef.current = true;
+        
+        if (restartTimeoutRef.current !== null) {
+            window.clearTimeout(restartTimeoutRef.current);
+            restartTimeoutRef.current = null;
+        }
+
         if (recognitionRef.current) {
-            isStoppingRef.current = true;
-            // Defensively nullify all handlers to prevent them from firing on a stale object.
-            recognitionRef.current.onresult = null;
-            recognitionRef.current.onerror = null;
-            recognitionRef.current.onend = null;
-            recognitionRef.current.stop();
+            try {
+                // Important: remove handlers before stopping to prevent 'onend' loops
+                recognitionRef.current.onresult = null;
+                recognitionRef.current.onerror = null;
+                recognitionRef.current.onend = null;
+                recognitionRef.current.stop();
+            } catch (e) {
+                // Ignore errors when stopping (e.g. if already stopped)
+            }
             recognitionRef.current = null;
         }
         setIsListening(false);
     }, []);
 
     const startListening = useCallback(() => {
-        // Rely on the ref as the source of truth for an active session.
-        if (recognitionRef.current) {
+        // If already running or explicitly stopped, do not start
+        if (recognitionRef.current || isStoppingRef.current) {
             return;
         }
 
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognition) {
-            onError('Voice recognition not supported in this browser.');
+            console.warn('Voice recognition not supported in this browser.');
             return;
         }
         
-        isStoppingRef.current = false;
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = 'en-US';
+        try {
+            const recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true; // We need this for faster detection
+            recognition.lang = 'en-US';
 
-        // Pre-compile an array of regexes from the wake words for efficient and safe matching.
-        const wakeWordRegexes = wakeWords.map(word => new RegExp(`\\b${escapeRegExp(word.toLowerCase())}\\b`));
+            recognition.onstart = () => {
+                setIsListening(true);
+            };
 
-        recognition.onresult = (event: any) => {
-            for (let i = event.resultIndex; i < event.results.length; ++i) {
-                const transcript = event.results[i][0].transcript.trim().toLowerCase();
-                if (wakeWordRegexes.some(regex => regex.test(transcript))) {
-                    onWakeWord();
-                    return; // Stop processing further transcripts once wake word is found.
-                }
-            }
-        };
-        
-        recognition.onerror = (event: any) => {
-            console.error('Wake word recognition error:', event.error, event.message);
-            // Non-critical errors that will be recovered by the 'onend' restart logic.
-            if (event.error === 'no-speech' || event.error === 'network' || event.error === 'aborted') {
-                return; 
-            }
-            
-            // Critical errors that require stopping the listener.
-            let errorMessage = `Speech recognition error: ${event.error}.`;
-            if (event.error === 'audio-capture') {
-                errorMessage = 'No microphone found. Ensure a microphone is installed and configured correctly.';
-            } else if (event.error === 'not-allowed') {
-                errorMessage = 'Microphone access was denied. Please allow microphone access in your browser settings.';
-            }
-            
-            onError(errorMessage);
-            stopListening();
-        };
-        
-        recognition.onend = () => {
-            if (isStoppingRef.current) {
-                return;
-            }
-            // Add a longer delay to prevent rapid-fire restarts, especially on network errors.
-            setTimeout(() => {
-                // Check again in case stopListening was called during the timeout.
-                if (!isStoppingRef.current && recognitionRef.current) {
-                    try {
-                        recognitionRef.current.start();
-                    } catch(e) {
-                        console.error("Could not restart wake word recognition", e);
-                        onError('Wake word listener failed to restart.');
-                        stopListening();
+            recognition.onresult = (event: any) => {
+                // Re-check stop flag in case it changed during processing
+                if (isStoppingRef.current) return;
+
+                const currentWakeWords = wakeWordsRef.current;
+                const wakeWordRegexes = currentWakeWords.map(word => new RegExp(`\\b${escapeRegExp(word.toLowerCase())}\\b`));
+
+                // Check the latest result
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal || event.results[i][0].confidence > 0.6) {
+                        const transcript = event.results[i][0].transcript.trim().toLowerCase();
+                        if (wakeWordRegexes.some(regex => regex.test(transcript))) {
+                            console.log("Wake word detected:", transcript);
+                            stopListening(); // Stop immediately to free up mic
+                            onWakeWord();
+                            return; 
+                        }
                     }
                 }
-            }, 500);
-        };
+            };
+            
+            recognition.onerror = (event: any) => {
+                // 'no-speech': User didn't speak, just restart.
+                // 'aborted': Happened because we stopped it or another app took focus.
+                if (event.error === 'no-speech' || event.error === 'aborted') {
+                    return; 
+                }
+                
+                console.log('Wake word non-critical error:', event.error);
 
-        recognitionRef.current = recognition;
-        try {
+                if (event.error === 'not-allowed' || event.error === 'audio-capture') {
+                    // These are fatal, do not restart
+                    isStoppingRef.current = true;
+                    setIsListening(false);
+                    onError(`Microphone access denied (${event.error}).`);
+                }
+            };
+            
+            recognition.onend = () => {
+                setIsListening(false);
+                recognitionRef.current = null;
+                
+                // Auto-restart logic
+                if (!isStoppingRef.current) {
+                    // Add a small delay to prevent rapid crash loops (especially on Android)
+                    restartTimeoutRef.current = window.setTimeout(() => {
+                        startListening();
+                    }, 200); 
+                }
+            };
+
+            recognitionRef.current = recognition;
             recognition.start();
-            setIsListening(true);
         } catch (e: any) {
             console.error("Wake word recognition failed to start:", e);
-            onError(`Wake word listener failed to start: ${e.message}`);
             recognitionRef.current = null;
             setIsListening(false);
         }
-    }, [wakeWords, onWakeWord, onError, stopListening]);
+    }, [onWakeWord, onError, stopListening]);
 
+    // Explicitly expose a method to enable the listener (sets the flag to false)
+    const enableAndStart = useCallback(() => {
+        isStoppingRef.current = false;
+        startListening();
+    }, [startListening]);
 
     // Cleanup on unmount
     useEffect(() => {
@@ -119,5 +141,5 @@ export const useWakeWord = ({ wakeWords, onWakeWord, onError }: UseWakeWordProps
         };
     }, [stopListening]);
 
-    return { startListening, stopListening };
+    return { startListening: enableAndStart, stopListening, isListening };
 };

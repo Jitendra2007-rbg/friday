@@ -1,12 +1,9 @@
 
-
-
-
-import { useState, useRef, useCallback, useEffect } from 'react';
-import { LiveServerMessage, Modality, Blob } from '@google/genai';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { LiveServerMessage, Modality, Blob as GenAIBlob } from '@google/genai';
 import { AgentStatus, CalendarEvent, Alarm, TranscriptEntry, User } from '../types';
 import { decode, encode, decodeAudioData, playAlarmSound, playActivationSound } from '../utils/audio';
-import { isNativePlatform } from '../utils/capacitor';
+import { isNativePlatform, sendWebNotification } from '../utils/capacitor';
 import { getSettings } from '../utils/settings';
 import * as db from '../services/database';
 import * as notifications from '../services/notifications';
@@ -15,7 +12,7 @@ import { useWakeWord } from './useWakeWord';
 import { useApiKey } from '../contexts/ApiKeyContext';
 import { useGemini } from '../contexts/GeminiContext';
 
-const createBlobFromAudio = (data: Float32Array): Blob => {
+const createBlobFromAudio = (data: Float32Array): GenAIBlob => {
     const l = data.length;
     const int16 = new Int16Array(l);
     for (let i = 0; i < l; i++) {
@@ -47,8 +44,16 @@ export const useAgent = ({ user }: { user: User | null; }) => {
     const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
     const pendingImageRef = useRef<string | null>(null);
     const turnInterruptedRef = useRef(false);
+    const isGreetingRef = useRef(false);
 
-    const WAKE_WORDS = user ? [`hey ${user.agentName.toLowerCase()}`, user.agentName.toLowerCase()] : ['hey friday'];
+    // Memoize wake words to prevent unnecessary re-renders in useWakeWord
+    const WAKE_WORDS = useMemo(() => {
+        const base = ['hey friday', 'friday'];
+        if (user?.agentName && user.agentName.toLowerCase() !== 'friday') {
+            return [`hey ${user.agentName.toLowerCase()}`, user.agentName.toLowerCase(), ...base];
+        }
+        return base;
+    }, [user?.agentName]);
 
     const currentInputTranscription = useRef('');
     const currentOutputTranscription = useRef('');
@@ -152,7 +157,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
             
             alarms.forEach(alarm => {
                 if (new Date(alarm.time) <= now && !firedNotificationIds.has(`alarm-${alarm.id}`)) {
-                    new Notification('Alarm', { body: alarm.label, icon: 'favicon.ico' });
+                    sendWebNotification('Alarm', { body: alarm.label, icon: 'favicon.ico' });
                     playAlarmSound();
                     addTranscript('system', `ALARM: ${alarm.label}`);
                     firedNotificationIds.add(`alarm-${alarm.id}`);
@@ -161,7 +166,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
 
             events.forEach(event => {
                 if (new Date(event.dateTime) <= now && !firedNotificationIds.has(`event-${event.id}`)) {
-                     new Notification('Event Reminder', { body: event.title, icon: 'favicon.ico' });
+                    sendWebNotification('Event Reminder', { body: event.title, icon: 'favicon.ico' });
                     addTranscript('system', `EVENT REMINDER: ${event.title}`);
                     firedNotificationIds.add(`event-${event.id}`);
                 }
@@ -172,12 +177,26 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         return () => clearInterval(intervalId);
     }, [alarms, events, addTranscript]);
 
+    const { 
+        startListening: startWakeWordListening, 
+        stopListening: stopWakeWordListening,
+        isListening: isWakeWordListening
+    } = useWakeWord({
+        wakeWords: WAKE_WORDS,
+        onWakeWord: () => startConversation(), // This triggers the conversation
+        onError: (error) => console.warn("Wake word error:", error), // Don't spam UI with non-fatal wake word errors
+    });
 
     const stopConversation = useCallback(() => {
         if (agentStatus === AgentStatus.IDLE && !sessionPromiseRef.current) return;
         
         scriptProcessorRef.current?.disconnect();
         sessionPromiseRef.current?.then(session => session.close()).catch(console.error);
+        
+        if (mediaStreamRef.current) {
+            mediaStreamRef.current.getTracks().forEach(track => track.stop());
+            mediaStreamRef.current = null;
+        }
 
         scriptProcessorRef.current = null;
         sessionPromiseRef.current = null;
@@ -191,17 +210,24 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         nextStartTime.current = 0;
 
         if (agentStatus !== AgentStatus.ERROR) {
-             addTranscript('system', `Session ended. Say "Hey ${user?.agentName || 'Friday'}" to start again.`);
+             addTranscript('system', `Session ended.`);
         }
+        
         setAgentStatus(AgentStatus.IDLE);
-    }, [addTranscript, agentStatus, user]);
+        isGreetingRef.current = false;
+        
+        // Restart wake word listener after a short delay to ensure mic is free
+        setTimeout(() => startWakeWordListening(), 500);
+    }, [addTranscript, agentStatus, startWakeWordListening]);
 
     const startConversation = useCallback(async () => {
+        // CRITICAL: Stop wake word listener immediately and wait for mic release
+        stopWakeWordListening();
+        
         if (!hasInteracted) {
             setHasInteracted(true);
         }
         
-        // Play activation sound for immediate user feedback
         playActivationSound();
 
         if (!ai) {
@@ -210,37 +236,11 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         }
 
         setAgentStatus(AgentStatus.CONNECTING);
+        isGreetingRef.current = true;
         
-        // --- Centralized Microphone Access ---
-        if (!mediaStreamRef.current || !mediaStreamRef.current.active) {
-            try {
-                mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
-            } catch (error) {
-                console.error("Failed to start conversation:", error);
-                if (error instanceof Error && (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError')) {
-                    let message = 'Microphone access was denied.';
-                    if (navigator.permissions) {
-                        try {
-                            const permStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-                            if (permStatus.state === 'denied') {
-                                message = 'Microphone access has been permanently blocked by your browser. You need to go into your browser\'s site settings to allow it.';
-                            } else { 
-                                message = 'Please allow microphone access when prompted by your browser.';
-                            }
-                        } catch (e) {
-                            console.warn("Could not query permissions API", e);
-                            message = 'Microphone access was denied. Please check your browser settings.';
-                        }
-                    }
-                    addTranscript('system', message);
-                } else {
-                    addTranscript('system', 'Could not access microphone. Please ensure it is connected and enabled.');
-                }
-                setAgentStatus(AgentStatus.ERROR);
-                return;
-            }
-        }
-
+        // Wait a moment for the Wake Word listener to fully release the microphone
+        // Increased to 200ms to be safe for "cannot record now" errors on mobile
+        await new Promise(resolve => setTimeout(resolve, 200));
 
         if (!user) {
             addTranscript('system', 'User not logged in. Conversation cannot start.');
@@ -248,28 +248,37 @@ export const useAgent = ({ user }: { user: User | null; }) => {
             return;
         }
         
-        stopWakeWordListening(); // Stop listening for wake word
         setTranscriptHistory([]);
         addTranscript('system', 'Connecting...');
         
         try {
+            // Request Mic *after* stopping wake word
+            try {
+                mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+            } catch (error) {
+                console.error("Failed to get microphone for conversation:", error);
+                addTranscript('system', 'Microphone access unavailable. Please ensuring no other app is using it.');
+                setAgentStatus(AgentStatus.ERROR);
+                return;
+            }
+
             const agentFunctions = createAgentFunctions(ai, user, addTranscript, (updatedUser) => {
                 if (userRef.current) userRef.current = updatedUser;
             });
 
             // Ensure audio contexts are created and ready.
-            if (!inputAudioContextRef.current || inputAudioContextRef.current.state === 'closed') {
-                inputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-            }
-            if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
-                outputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-            }
-
-            if (inputAudioContextRef.current.state === 'suspended') {
-                await inputAudioContextRef.current.resume();
-            }
-            if (outputAudioContextRef.current.state === 'suspended') {
-                await outputAudioContextRef.current.resume();
+            try {
+                if (!inputAudioContextRef.current || inputAudioContextRef.current.state === 'closed') {
+                    inputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                }
+                if (!outputAudioContextRef.current || outputAudioContextRef.current.state === 'closed') {
+                    outputAudioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+                }
+                // Resume contexts (required by browsers)
+                if (inputAudioContextRef.current.state === 'suspended') await inputAudioContextRef.current.resume();
+                if (outputAudioContextRef.current.state === 'suspended') await outputAudioContextRef.current.resume();
+            } catch (e) {
+                console.error("AudioContext initialization failed", e);
             }
 
             nextStartTime.current = 0;
@@ -278,35 +287,21 @@ export const useAgent = ({ user }: { user: User | null; }) => {
             const settings = getSettings();
             
             const systemInstruction = `You are a helpful and conversational voice assistant named ${user.agentName}.
-
-            **Activation & Greeting:**
-            - When you receive the command '[SYSTEM_GREET]', your first and only action MUST be to provide a warm, friendly greeting to the user. Do not wait for them to speak first. If you know their name from the profile data provided below, use it.
-
-            **Core Persona & Behavior:**
-            - You MUST operate on Indian Standard Time (IST). When asked for the time or date, provide it in IST. The current date is ${new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}.
-            - Your session should remain active for a long conversation. Do not close the session unless the user says goodbye or is inactive.
-            - You can process images sent by the user. If an image is provided, your next response should relate to it.
-            - Strive to answer any question to the best of your ability. Keep responses conversational, grammatically correct, and not overly long.
-            - If a user's request is unclear, politely ask for clarification.
-
-            **Emotional Intelligence & Empathy:**
-            - When a user expresses emotions (e.g., love, fear, joy, sadness), detect the underlying emotional tone.
-            - Acknowledge and validate their feelings (e.g., 'It sounds like you're feeling worried—it's okay to feel that way.').
-            - Respond with empathy. Offer comfort, support, or gentle humor as appropriate.
-            - For anxiety or doubt, use encouraging words. For warmth, respond affectionately but maintain boundaries. For humor, tell a light-hearted joke.
-            - If a user expresses distress, suggest helpful resources or actions. Create a safe, supportive space.
-            - IMPORTANT BOUNDARY: Never promise a romantic relationship. Clarify that your connection is one of friendship, support, and learning together.
-
-            **Personalization & Memory:**
-            - You should try to learn about the user to make conversations better. If you don't know the user's name, age, or primary interests, find a natural moment in the conversation to ask for them.
-            - Remember important details the user shares (like their name, mood, education, interests, age). Use the 'saveUserDetails' function to store these key facts. Do NOT save every little detail, only things that are important for building a connection and personalizing future conversations.
-            - Here is what you currently know about the user: ${user.profileData ? JSON.stringify(user.profileData) : 'You do not know anything about the user yet.'}. Use this information to make the conversation more personal and relevant. Refer to previous topics for continuity.
-
-            **Functions & Creativity:**
-            - You can open websites, launch native mobile apps, schedule events, and set alarms. When scheduling or setting alarms, always confirm the action and time.
-            - You can generate images from text descriptions. Use the 'generateImage' function when a user asks you to create, draw, or show them a picture of something.
-            - You can search for products (e.g., shoes, gadgets), use the 'searchProducts' function. Mention that you'll look on stores like Amazon, Nike, or Flipkart. The function will return product information and you MUST show the user the images and details. Your spoken response should summarize what you found.
-            - You MUST speak and respond ONLY in English. Do not use any other languages like Telugu, Malayalam, or Tamil, regardless of the user's input language.`;
+            
+            **CRITICAL INSTRUCTION:**
+            - Your first task is to GREET the user naturally.
+            - Say "Hello ${user.agentName === 'Friday' ? '' : user.agentName}, I'm here!" or "Hi there!".
+            - Be concise, friendly, and helpful.
+            - Operate on Indian Standard Time (IST).
+            
+            **Capabilities:**
+            - You can open websites, launch apps, schedule events, and set alarms using the provided tools.
+            - You can see images if the user provides them.
+            - You can search for products.
+            
+            **Memory:**
+            - User Profile: ${user.profileData ? JSON.stringify(user.profileData) : 'None'}.
+            `;
 
             sessionPromiseRef.current = ai.live.connect({
                 model: 'gemini-2.5-flash-native-audio-preview-09-2025',
@@ -330,30 +325,39 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                             }
                             return prev;
                         });
-
-                        sessionPromiseRef.current?.then((session) => {
-                           session.sendRealtimeInput({ text: "[SYSTEM_GREET]" });
-                        });
-
-                        const source = inputAudioContextRef.current!.createMediaStreamSource(mediaStreamRef.current!);
-                        scriptProcessorRef.current = inputAudioContextRef.current!.createScriptProcessor(4096, 1, 1);
-                        scriptProcessorRef.current.onaudioprocess = (event) => {
-                            const inputData = event.inputBuffer.getChannelData(0);
-                            const pcmBlob = createBlobFromAudio(inputData);
-                            sessionPromiseRef.current?.then((session) => {
-                                if (pendingImageRef.current) {
-                                    const imageBase64 = pendingImageRef.current;
-                                    pendingImageRef.current = null;
-                                    const mimeType = imageBase64.substring(imageBase64.indexOf(":") + 1, imageBase64.indexOf(";"));
-                                    const data = imageBase64.substring(imageBase64.indexOf(",") + 1);
-                                    session.sendRealtimeInput({ media: { data, mimeType }});
-                                    addTranscript('system', `Image sent to agent.`);
-                                }
-                                session.sendRealtimeInput({ media: pcmBlob })
+                        
+                        // FORCE GREETING: Send a silent text trigger to make the model speak first.
+                        setTimeout(() => {
+                            sessionPromiseRef.current?.then(session => {
+                                console.log("Sending trigger message for greeting...");
+                                // We cast to any here because the strict SDK types might not document strict text input for Live yet, 
+                                // but it is supported by the backend for turn initiation.
+                                session.sendRealtimeInput([{ text: "Hello" }] as any);
                             });
-                        };
-                        source.connect(scriptProcessorRef.current);
-                        scriptProcessorRef.current.connect(inputAudioContextRef.current!.destination);
+                        }, 100);
+
+                        // Start Streaming Audio Input
+                        if (inputAudioContextRef.current && mediaStreamRef.current) {
+                            const source = inputAudioContextRef.current.createMediaStreamSource(mediaStreamRef.current);
+                            scriptProcessorRef.current = inputAudioContextRef.current.createScriptProcessor(4096, 1, 1);
+                            scriptProcessorRef.current.onaudioprocess = (event) => {
+                                const inputData = event.inputBuffer.getChannelData(0);
+                                const pcmBlob = createBlobFromAudio(inputData);
+                                sessionPromiseRef.current?.then((session) => {
+                                    if (pendingImageRef.current) {
+                                        const imageBase64 = pendingImageRef.current;
+                                        pendingImageRef.current = null;
+                                        const mimeType = imageBase64.substring(imageBase64.indexOf(":") + 1, imageBase64.indexOf(";"));
+                                        const data = imageBase64.substring(imageBase64.indexOf(",") + 1);
+                                        session.sendRealtimeInput({ media: { data, mimeType }});
+                                        addTranscript('system', `Image sent to agent.`);
+                                    }
+                                    session.sendRealtimeInput({ media: pcmBlob })
+                                });
+                            };
+                            source.connect(scriptProcessorRef.current);
+                            scriptProcessorRef.current.connect(inputAudioContextRef.current.destination);
+                        }
                     },
                     onmessage: async (message: LiveServerMessage) => {
                         const currentOutputAudioContext = outputAudioContextRef.current;
@@ -370,14 +374,20 @@ export const useAgent = ({ user }: { user: User | null; }) => {
 
                        if (message.serverContent?.inputTranscription) {
                             const text = message.serverContent.inputTranscription.text;
-                            currentInputTranscription.current += text;
-                            setTranscriptHistory(prev => {
-                                const lastEntry = prev[prev.length - 1];
-                                if (lastEntry?.speaker === 'user' && !lastEntry.text.startsWith('<img')) {
-                                    return [...prev.slice(0, -1), { ...lastEntry, text: currentInputTranscription.current }];
-                                }
-                                return [...prev, { id: Date.now().toString(), speaker: 'user', text: currentInputTranscription.current }];
-                            });
+                            // HACK: Filter out the automatic "Hello" trigger so it doesn't show in UI
+                            if (isGreetingRef.current && (text.toLowerCase().includes('hello') || text.length < 5)) {
+                                // Don't display the trigger
+                            } else {
+                                isGreetingRef.current = false; // Reset flag once real input starts
+                                currentInputTranscription.current += text;
+                                setTranscriptHistory(prev => {
+                                    const lastEntry = prev[prev.length - 1];
+                                    if (lastEntry?.speaker === 'user' && !lastEntry.text.startsWith('<img')) {
+                                        return [...prev.slice(0, -1), { ...lastEntry, text: currentInputTranscription.current }];
+                                    }
+                                    return [...prev, { id: Date.now().toString(), speaker: 'user', text: currentInputTranscription.current }];
+                                });
+                            }
                        }
                        if (message.serverContent?.outputTranscription) {
                             setAgentStatus(AgentStatus.SPEAKING);
@@ -400,7 +410,7 @@ export const useAgent = ({ user }: { user: User | null; }) => {
 
                        if (message.toolCall) {
                             setAgentStatus(AgentStatus.THINKING);
-                            turnInterruptedRef.current = false; // New turn with a tool call.
+                            turnInterruptedRef.current = false;
 
                             for (const fc of message.toolCall.functionCalls) {
                                 let result: string | undefined;
@@ -449,7 +459,6 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                                     result = error instanceof Error ? error.message : "An unknown error occurred while executing the function.";
                                 }
         
-                                // Check for interruption *after* the async agent function has completed.
                                 if (turnInterruptedRef.current) {
                                     console.log('Conversation was interrupted during tool execution. Aborting tool response.');
                                     break; 
@@ -484,30 +493,16 @@ export const useAgent = ({ user }: { user: User | null; }) => {
         } catch (error) {
             handleApiError(error);
         }
-    }, [addTranscript, stopConversation, user, setTranscriptHistory, hasInteracted, handleApiError, ai]);
+    }, [addTranscript, stopConversation, user, setTranscriptHistory, hasInteracted, handleApiError, ai, WAKE_WORDS, stopWakeWordListening]);
     
-    const { startListening: startWakeWordListening, stopListening: stopWakeWordListening } = useWakeWord({
-        wakeWords: WAKE_WORDS,
-        onWakeWord: startConversation,
-        onError: (error) => addTranscript('system', error),
-    });
-
+    // Auto-start wake word listener on mount (or when agent becomes idle)
     useEffect(() => {
-        if (agentStatus === AgentStatus.IDLE && hasInteracted) {
+        if (agentStatus === AgentStatus.IDLE) {
             startWakeWordListening();
         } else {
             stopWakeWordListening();
         }
-    }, [agentStatus, startWakeWordListening, stopWakeWordListening, hasInteracted]);
-
-    useEffect(() => {
-        if (user && hasInteracted) {
-            addTranscript('system', `Say "Hey ${user.agentName}" or just "${user.agentName}" to activate the assistant.`);
-        } else if (user && !hasInteracted) {
-            addTranscript('system', `Click "Start Manually" to begin the conversation.`);
-        }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [user, hasInteracted]);
+    }, [agentStatus, startWakeWordListening, stopWakeWordListening]);
 
     useEffect(() => {
         return () => {
@@ -523,8 +518,22 @@ export const useAgent = ({ user }: { user: User | null; }) => {
                 outputAudioContextRef.current.close().catch(console.error);
             }
             sessionPromiseRef.current?.then(session => session.close()).catch(console.error);
+            stopWakeWordListening();
         };
     }, []);
     
-    return { agentStatus, transcriptHistory, events, alarms, startConversation, stopConversation, deleteAlarm, updateAlarm, deleteEvent, updateEvent, setPendingImage };
+    return { 
+        agentStatus, 
+        transcriptHistory, 
+        events, 
+        alarms, 
+        startConversation, 
+        stopConversation, 
+        deleteAlarm, 
+        updateAlarm, 
+        deleteEvent, 
+        updateEvent, 
+        setPendingImage,
+        isWakeWordListening 
+    };
 };
